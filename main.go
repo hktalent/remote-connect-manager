@@ -18,7 +18,11 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+// version 由发布工作流通过 -ldflags "-X main.version=..." 注入
+var version = "dev"
+
 func main() {
+	log.Printf("remote-connect-manager %s", version)
 	if err := config.InitDB("./data/connections.db"); err != nil {
 		log.Fatalf("init db: %v", err)
 	}

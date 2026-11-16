@@ -90,6 +90,7 @@ remote-connect-manager/
 │   └── vendor/                 # xterm / noVNC / guacamole 本地化依赖
 ├── data/                       # 运行时数据（配置、截图、密钥），首次启动自动创建
 ├── vendor/                     # Go 依赖（离线构建）
+├── .github/workflows/release.yml  # 推 v* 标签自动编译三平台二进制并发布
 ├── Dockerfile
 ├── docker-compose.yml
 └── start.sh
@@ -113,6 +114,32 @@ PORT=8080 ./remote-connect-manager
 ```
 
 > 若想更新依赖，可用 `GOFLAGS=-mod=mod GOPROXY=https://goproxy.cn,direct go mod tidy` 后再 `go mod vendor`。
+
+### 跨平台发布（GitHub Actions）
+
+仓库内置 [.github/workflows/release.yml](.github/workflows/release.yml)：**推送 `v*` 标签即自动编译并发布 Release**，产物是不依赖 Docker 的独立可执行文件。
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+工作流会并行编译 5 个目标并上传到 Release：
+
+| 平台 | 架构 | 产物 |
+| --- | --- | --- |
+| Linux | amd64 / arm64 | `remote-connect-manager_<版本>_linux_<arch>.tar.gz` |
+| macOS | amd64（Intel）/ arm64（Apple Silicon） | `remote-connect-manager_<版本>_darwin_<arch>.tar.gz` |
+| Windows | amd64 | `remote-connect-manager_<版本>_windows_amd64.zip` |
+
+- 编译参数：`CGO_ENABLED=0`（纯静态、无 C 依赖）、`-trimpath`、`-ldflags "-s -w -X main.version=<标签>"`，前端 `web/` 由 `embed.FS` 打包进二进制。
+- 也可以在 Actions 页面手动触发（`Release → Run workflow`），填一个版本号即可。
+- 需要本地复现某个平台时：
+
+```bash
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-mod=vendor \
+  go build -trimpath -ldflags "-s -w -X main.version=v1.0.0" -o rcm.exe .
+```
 
 ### Docker 构建
 
@@ -150,20 +177,45 @@ compose 会拉起两个容器：
 
 改端口只需改 compose 里的 `"8088:8080"` 左侧，例如 `"9090:8080"`。
 
-### 2. 不用 Docker 直接跑
+### 2. 独立运行（Windows / macOS / Linux，免 Docker）
+
+到 [Releases](https://github.com/hktalent/remote-connect-manager/releases) 下载对应平台的包，解压后在**同一个目录**里运行（配置、密钥、截图默认写在当前目录的 `data/`）：
+
+**macOS / Linux**
 
 ```bash
-GOFLAGS=-mod=vendor go build -o remote-connect-manager .
-./remote-connect-manager            # 默认 :8080，可用 PORT=xxxx 改端口
+tar -xzf remote-connect-manager_<版本>_<平台>_<架构>.tar.gz
+chmod +x remote-connect-manager
+./remote-connect-manager              # 默认 :8080
+PORT=9090 ./remote-connect-manager    # 换端口
 ```
 
-RDP 需要本机有 `guacd`（默认 `127.0.0.1:4822`），否则只有 SSH / VNC 可用：
+> macOS 首次运行若提示「无法验证开发者」，右键 → 打开，或执行 `xattr -d com.apple.quarantine ./remote-connect-manager`。
+
+**Windows**
+
+```powershell
+# 解压 zip 后，在解压目录打开 PowerShell
+.\remote-connect-manager.exe
+# 换端口
+$env:PORT=9090; .\remote-connect-manager.exe
+```
+
+打开 <http://127.0.0.1:8080> 即可使用。
+
+独立运行的注意事项：
+
+- **数据目录跟随工作目录**：`data/connections.db`、`data/keys/`、`data/screenshots/` 都相对于启动时的当前目录。建议在固定目录里启动（Windows 快捷方式需设置「起始位置」），迁移时拷 `data/` 即可。
+- **密钥来源**：会自动扫描 `$HOME/.ssh`（Windows 为 `C:\Users\<你>\.ssh`）；想扫描其它目录用 `SSH_SCAN_DIR` 指定。
+- **RDP 依赖 guacd**：SSH / VNC 开箱可用，RDP 需要本机或局域网内有 `guacd`：
 
 ```bash
-docker run -d --name guacd -p 4822:4822 guacamole/guacd:1.5.5
-# 或者指定外部 guacd
-GUACD_ADDR=10.0.0.5:4822 ./remote-connect-manager
+docker run -d --name guacd -p 4822:4822 guacamole/guacd:1.5.5   # 只需这一个容器
+GUACD_ADDR=127.0.0.1:4822 ./remote-connect-manager
 ```
+
+- **生产环境**建议关闭 Gin 调试输出：`GIN_MODE=release ./remote-connect-manager`。
+- 版本号来自编译期注入，启动日志第一行会打印（如 `remote-connect-manager v1.0.0`）。
 
 ### 3. 配置一条连接
 
@@ -189,6 +241,77 @@ GUACD_ADDR=10.0.0.5:4822 ./remote-connect-manager
 | `PORT` | `8080` | HTTP 监听端口 |
 | `GUACD_ADDR` | `127.0.0.1:4822` | guacd 地址，RDP 使用 |
 | `SSH_SCAN_DIR` | `/host-ssh` → `$HOME/.ssh` | 密钥扫描目录 |
+
+## 配置说明
+
+### 数据目录
+
+所有运行时数据都在启动目录的 `data/` 下（Docker 部署时对应容器内 `/app/data`）：
+
+```
+data/
+├── connections.db        # 连接配置，实际是 JSON 数组（不是 SQLite）
+├── keys/                 # 密钥库
+│   ├── id_rsa            # 私钥（文件名即密钥名）
+│   ├── id_rsa.pub        # 公钥
+│   └── .manifest.json    # 密钥来源记录：{ "id_rsa": "/Users/you/.ssh/id_rsa" }
+└── screenshots/          # 卡片背景图：<连接ID>_<纳秒时间戳>.jpg|png（每连接只保留最新一张）
+```
+
+### 连接配置（`data/connections.db`）
+
+每次请求都会重新读取该文件，因此**直接编辑 JSON 也能生效**（改完刷新页面即可，无需重启）。格式：
+
+```json
+[
+  {
+    "id": "0b6f3c1e-9a2d-4b7c-8f10-3d1a2b3c4d5e",
+    "name": "戴尔kali",
+    "type": "ssh",
+    "host": "192.168.0.121",
+    "port": 22,
+    "username": "root",
+    "auth_type": "key",
+    "key_name": "id_ed25519",
+    "width": 0,
+    "height": 0,
+    "screenshot": "/screenshots/0b6f...jpg",
+    "created_at": "2026-11-16T13:37:00+08:00",
+    "updated_at": "2026-11-16T13:37:00+08:00",
+    "last_connect": "2026-11-16T21:56:51+08:00"
+  }
+]
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | UUID，新建时自动生成 |
+| `name` | 卡片显示名 |
+| `type` | `ssh` / `vnc` / `rdp` |
+| `host` / `port` | 目标地址；RDP 默认 3389，VNC 5900，SSH 22 |
+| `username` | 登录用户（VNC 可留空） |
+| `auth_type` | `key` 或 `password`（SSH 生效） |
+| `key_name` | 引用 `data/keys/` 下的密钥名；私钥带口令时口令填在 `password` |
+| `password` | VNC / RDP 密码，或 SSH 密钥口令 |
+| `width` / `height` / `color_depth` / `security` | RDP / VNC 画面参数，缺省由服务端决定 |
+| `screenshot` | 卡片背景图地址，由程序自动写入，不要手填 |
+
+> `data/connections.db` 里可能含明文密码，请当作敏感文件保护（Docker 部署时它落在宿主机 `./data`）。
+
+### 密钥文件
+
+- 密钥名必须能通过文件名安全校验（字母、数字、`_`、`-`、`.`），改名会同步更新所有引用它的连接。
+- 从 `~/.ssh` 扫描时：能解析的私钥会推导公钥；加密私钥（`-----BEGIN ... ENCRYPTED-----`）也会导入并标记「加密」，连接时用口令解锁；同名不同内容会加 `_<sha256前6位>` 后缀，不会覆盖已有密钥。
+- `.pub` 文件、`config`、`known_hosts*`、`authorized_keys*` 会被跳过。
+
+### 端口与运行参数
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PORT` | `8080` | 监听端口（Docker compose 里映射为宿主机 `8088`） |
+| `GUACD_ADDR` | `127.0.0.1:4822` | 仅 RDP 使用 |
+| `SSH_SCAN_DIR` | `/host-ssh` → `$HOME/.ssh` | 启动时扫描导入密钥的目录 |
+| `GIN_MODE` | `debug` | 设为 `release` 关闭调试日志 |
 
 ## API 一览
 

@@ -1,0 +1,112 @@
+name: Release
+
+# 推送 v* 版本标签时，自动编译 Windows / Linux / macOS 独立二进制并发布 Release
+# 也可以手动触发（Actions → Release → Run workflow，填 v1.2.3）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本号（如 v1.2.3）'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    env:
+      VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      # 前端已通过 embed.FS 打进二进制；依赖走仓库内的 vendor/，无需联网拉模块
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BIN=remote-connect-manager
+          if [ "$GOOS" = "windows" ]; then BIN="${BIN}.exe"; fi
+          GOFLAGS=-mod=vendor go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/${BIN}" .
+          ls -lh dist
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          cd dist
+          BASE="remote-connect-manager_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -q "${BASE}.zip" remote-connect-manager.exe
+            rm -f remote-connect-manager.exe
+          else
+            tar -czf "${BASE}.tar.gz" remote-connect-manager
+            rm -f remote-connect-manager
+          fi
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List files
+        run: ls -lh dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            独立二进制（无需 Docker，前端页面已内嵌）：
+
+            | 平台 | 文件 |
+            | --- | --- |
+            | Linux x86_64 | `remote-connect-manager_*_linux_amd64.tar.gz` |
+            | Linux arm64 | `remote-connect-manager_*_linux_arm64.tar.gz` |
+            | macOS Intel | `remote-connect-manager_*_darwin_amd64.tar.gz` |
+            | macOS Apple Silicon | `remote-connect-manager_*_darwin_arm64.tar.gz` |
+            | Windows x86_64 | `remote-connect-manager_*_windows_amd64.zip` |
+
+            运行：解压后执行 `./remote-connect-manager`（Windows 双击 `remote-connect-manager.exe`），默认监听 `:8080`，用 `PORT` 改端口。
+            SSH / VNC 直接可用；RDP 需要本机或局域网有 `guacd`（`GUACD_ADDR` 指定）。
