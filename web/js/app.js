@@ -242,6 +242,7 @@ async function loadKeysList() {
   keys.forEach(k => {
     const item = document.createElement('div');
     item.className = 'key-item';
+    item.dataset.name = k.name;
     item.innerHTML = `
       <div class="key-item-header">
         <span class="key-item-name">${escapeHtml(k.name)}${
@@ -252,6 +253,7 @@ async function loadKeysList() {
       <div class="key-pub">${escapeHtml(k.public_key || '(无公钥)')}</div>
       <div class="key-actions">
         <button class="btn-secondary" onclick="copyPubKey('${k.name}')">复制公钥</button>
+        <button class="btn-secondary" onclick="editKey(this)">编辑</button>
         <button class="btn-secondary danger" onclick="deleteKey('${k.name}')">删除</button>
       </div>
     `;
@@ -259,8 +261,66 @@ async function loadKeysList() {
   });
 }
 
-async function scanSSHKeys() {
-  const res = await fetch('/api/keys/scan', { method: 'POST' });
+// ====== 密钥编辑 ======
+async function editKey(btn) {
+  const item = btn.closest('.key-item');
+  if (item.querySelector('.key-edit')) return;
+  const name = item.dataset.name;
+  let priv = '';
+  try {
+    const res = await fetch(`/api/keys/${encodeURIComponent(name)}`);
+    const data = await res.json();
+    priv = data.private_key || '';
+  } catch (e) {}
+
+  const pubText = item.querySelector('.key-pub').textContent.trim();
+  const editor = document.createElement('div');
+  editor.className = 'key-edit';
+  editor.innerHTML = `
+    <label>密钥名称</label>
+    <input class="edit-name" value="${escapeHtml(name)}">
+    <label>私钥内容</label>
+    <textarea class="edit-priv" spellcheck="false"></textarea>
+    <label>公钥内容（留空则自动从私钥推导）</label>
+    <textarea class="edit-pub" spellcheck="false"></textarea>
+    <div class="key-edit-actions">
+      <button type="button" class="btn-secondary" onclick="cancelKeyEdit(this)">取消</button>
+      <button type="button" class="btn-primary" onclick="saveKeyEdit(this)">保存</button>
+    </div>`;
+  editor.querySelector('.edit-priv').value = priv;
+  editor.querySelector('.edit-pub').value = pubText.startsWith('(') ? '' : pubText;
+  item.appendChild(editor);
+  editor.querySelector('.edit-name').focus();
+}
+
+function cancelKeyEdit(btn) {
+  const editor = btn.closest('.key-edit');
+  if (editor) editor.remove();
+}
+
+async function saveKeyEdit(btn) {
+  const item = btn.closest('.key-item');
+  const oldName = item.dataset.name;
+  const newName = item.querySelector('.edit-name').value.trim();
+  const priv = item.querySelector('.edit-priv').value;
+  const pub = item.querySelector('.edit-pub').value.trim();
+  if (!newName) return alert('密钥名称不能为空');
+  if (!priv) return alert('私钥内容不能为空');
+
+  const res = await fetch(`/api/keys/${encodeURIComponent(oldName)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_name: newName, private_key: priv, public_key: pub }),
+  });
+  if (!res.ok) {
+    let msg = '保存失败';
+    try { msg = (await res.json()).error || msg; } catch (e) {}
+    return alert(msg);
+  }
+  await loadKeysList();
+}
+
+async function scanSSHKeys() {  const res = await fetch('/api/keys/scan', { method: 'POST' });
   const data = await res.json();
   const imported = data.imported || [];
   const skipped = data.skipped || [];

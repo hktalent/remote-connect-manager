@@ -175,7 +175,10 @@ body {
   width: 90%;
   max-width: 520px;
   max-height: 90vh;
-  overflow-y: auto;
+  /* 纵向弹性布局：头部与底部按钮行固定，仅中间内容滚动 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid #2a3040;
 }
 
@@ -185,6 +188,11 @@ body {
   align-items: center;
   padding: 16px 20px;
   border-bottom: 1px solid #2a3040;
+  flex: 0 0 auto;
+  background: #1a1f2e;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 .modal-header h2 { font-size: 18px; }
 
@@ -197,7 +205,20 @@ body {
 }
 .close-btn:hover { color: white; }
 
-#config-form { padding: 20px; }
+#config-form {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 .form-row {
   display: flex;
@@ -230,6 +251,11 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
+  background: #1a1f2e;
+  z-index: 2;
 }
 
 .hidden { display: none !important; }
@@ -301,6 +327,12 @@ body {
   padding: 16px 20px;
   display: flex;
   gap: 10px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid #2a3040;
+  background: #1a1f2e;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .keys-toolbar input {
   flex: 1;
@@ -312,11 +344,44 @@ body {
 }
 
 .keys-list {
-  padding: 0 20px 16px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
+
+/* 密钥编辑区 */
+.key-edit {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px dashed #2a3040;
+  padding-top: 10px;
+}
+.key-edit label {
+  font-size: 12px;
+  color: #a0a8b8;
+}
+.key-edit input,
+.key-edit textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #2a3040;
+  background: #0b0f17;
+  color: #e6e6e6;
+  font-family: Menlo, Monaco, monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+.key-edit textarea { min-height: 92px; }
+.key-edit input:focus,
+.key-edit textarea:focus { outline: none; border-color: #4f8cff; }
+.key-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 .key-item {
   background: #0f1419;

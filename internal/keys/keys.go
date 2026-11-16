@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
+	"remote-connect-manager/internal/config"
 )
 
 var keysDir string
@@ -307,6 +308,99 @@ func DeleteKey(c *gin.Context) {
 	os.Remove(filepath.Join(keysDir, name))
 	os.Remove(filepath.Join(keysDir, name+".pub"))
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// UpdateKey 编辑已有密钥：可改名、替换私钥内容、更新公钥
+func UpdateKey(c *gin.Context) {
+	oldName := c.Param("name")
+	if sanitizeName(oldName) != oldName {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法密钥名"})
+		return
+	}
+	var body struct {
+		NewName    string `json:"new_name"`
+		PrivateKey string `json:"private_key"`
+		PublicKey  string `json:"public_key"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	oldPriv := filepath.Join(keysDir, oldName)
+	oldPub := oldPriv + ".pub"
+	if _, err := os.Stat(oldPriv); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "密钥不存在"})
+		return
+	}
+
+	newName := oldName
+	if body.NewName != "" && body.NewName != oldName {
+		newName = sanitizeName(body.NewName)
+		if newName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "密钥名不能为空"})
+			return
+		}
+		if _, err := os.Stat(filepath.Join(keysDir, newName)); err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "同名密钥已存在"})
+			return
+		}
+	}
+
+	privData := body.PrivateKey
+	if privData == "" {
+		// 未修改私钥内容，沿用原文件
+		if raw, err := os.ReadFile(oldPriv); err == nil {
+			privData = string(raw)
+		}
+	} else if !looksLikePrivateKey([]byte(privData)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "私钥内容格式不正确"})
+		return
+	}
+
+	newPriv := filepath.Join(keysDir, newName)
+	if newName != oldName {
+		if err := os.Rename(oldPriv, newPriv); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if _, err := os.Stat(oldPub); err == nil {
+			os.Rename(oldPub, newPriv+".pub")
+		}
+	}
+	if err := os.WriteFile(newPriv, []byte(privData), 0600); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 公钥：优先用传入值，否则尝试由私钥推导
+	pub := strings.TrimSpace(body.PublicKey)
+	if pub == "" {
+		if signer, err := ssh.ParsePrivateKey([]byte(privData)); err == nil {
+			pub = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+		} else if raw, err := os.ReadFile(newPriv + ".pub"); err == nil {
+			pub = strings.TrimSpace(string(raw))
+		}
+	}
+	if pub != "" {
+		os.WriteFile(newPriv+".pub", []byte(pub+"\n"), 0644)
+	}
+
+	// 同步 manifest 中的来源记录
+	if manifest := readManifest(); len(manifest) > 0 {
+		if src, ok := manifest[oldName]; ok {
+			delete(manifest, oldName)
+			manifest[newName] = src
+			writeManifest(manifest)
+		}
+	}
+
+	// 改名后同步更新连接配置里的密钥引用
+	if newName != oldName {
+		config.RenameKeyReference(oldName, newName)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"name": newName, "public_key": pub})
 }
 
 func GetKey(c *gin.Context) {

@@ -49,6 +49,7 @@ func main() {
 		api.GET("/keys", keys.ListKeys)
 		api.POST("/keys/generate", keys.GenerateKey)
 		api.DELETE("/keys/:name", keys.DeleteKey)
+		api.PUT("/keys/:name", keys.UpdateKey)
 		api.GET("/keys/:name", keys.GetKey)
 		api.GET("/keys/:name/public", keys.GetPublicKey)
 		api.POST("/keys/import", keys.ImportKey)

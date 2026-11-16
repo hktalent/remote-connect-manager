@@ -207,8 +207,25 @@ func DeleteConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-func UpdateScreenshot(id, path string) error {
+// RenameKeyReference 密钥改名后同步更新连接配置中的引用，避免配置指向不存在的密钥
+func RenameKeyReference(oldName, newName string) {
 	conns, err := loadAll()
+	if err != nil {
+		return
+	}
+	changed := false
+	for i := range conns {
+		if conns[i].KeyName == oldName {
+			conns[i].KeyName = newName
+			changed = true
+		}
+	}
+	if changed {
+		saveAll(conns)
+	}
+}
+
+func UpdateScreenshot(id, path string) error {	conns, err := loadAll()
 	if err != nil {
 		return err
 	}
