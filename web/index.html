@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>远程连接管理器</title>
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <h1>远程连接管理器</h1>
+    <div class="actions">
+      <button id="btn-add" class="btn-primary">+ 新建连接</button>
+      <button id="btn-keys" class="btn-secondary">密钥管理</button>
+    </div>
+  </header>
+
+  <main id="card-grid" class="card-grid"></main>
+</div>
+
+<!-- Config Modal -->
+<div id="config-modal" class="modal hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="modal-title">新建连接</h2>
+      <button class="close-btn" onclick="closeModal()">&times;</button>
+    </div>
+    <form id="config-form">
+      <input type="hidden" name="id">
+      <div class="form-row">
+        <label>名称</label>
+        <input type="text" name="name" required>
+      </div>
+      <div class="form-row">
+        <label>类型</label>
+        <select name="type" id="conn-type" onchange="onTypeChange()">
+          <option value="ssh">SSH</option>
+          <option value="vnc">VNC</option>
+          <option value="rdp">RDP</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>主机</label>
+        <input type="text" name="host" required placeholder="192.168.1.1">
+      </div>
+      <div class="form-row">
+        <label>端口</label>
+        <input type="number" name="port" required>
+      </div>
+      <div class="form-row">
+        <label>用户名</label>
+        <input type="text" name="username">
+      </div>
+      <div id="auth-section">
+        <div class="form-row">
+          <label>认证方式</label>
+          <select name="auth_type" id="auth-type" onchange="onAuthChange()">
+            <option value="key">密钥</option>
+            <option value="password">密码</option>
+          </select>
+        </div>
+        <div id="key-section" class="form-row">
+          <label>密钥</label>
+          <select name="key_name" id="key-select" onchange="onKeySelectChange()">
+            <option value="">-- 选择密钥 --</option>
+          </select>
+          <span class="hint" id="key-hint"></span>
+        </div>
+        <div id="pass-section" class="form-row hidden">
+          <label>密码</label>
+          <input type="password" name="password">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>宽度</label>
+        <input type="number" name="width" value="1280">
+      </div>
+      <div class="form-row">
+        <label>高度</label>
+        <input type="number" name="height" value="720">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" onclick="closeModal()">取消</button>
+        <button type="submit" class="btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Keys Modal -->
+<div id="keys-modal" class="modal hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>SSH 密钥管理</h2>
+      <button class="close-btn" onclick="closeKeysModal()">&times;</button>
+    </div>
+    <div class="keys-toolbar">
+      <input type="text" id="new-key-name" placeholder="新密钥名称">
+      <button class="btn-primary" onclick="generateKey()">生成新密钥</button>
+      <button class="btn-secondary" onclick="scanSSHKeys()">扫描 ~/.ssh</button>
+    </div>
+    <div id="keys-list" class="keys-list"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeKeysModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- Session Viewer -->
+<div id="session-viewer" class="session-viewer hidden">
+  <div class="session-header">
+    <span id="session-title"></span>
+    <div class="session-controls">
+      <button id="btn-zoom-out" title="缩小">−</button>
+      <button id="btn-zoom-reset" title="重置">⟲</button>
+      <button id="btn-zoom-in" title="放大">+</button>
+      <button id="btn-fullscreen" title="全屏">⛶</button>
+      <button id="btn-close-session" title="关闭" class="danger">✕</button>
+    </div>
+  </div>
+  <div id="session-body" class="session-body"></div>
+</div>
+
+<!-- 依赖全部本地化，避免 CDN 不可达导致页面功能失效 -->
+<script src="/vendor/xterm/xterm.js"></script>
+<script src="/vendor/xterm/xterm-addon-fit.js"></script>
+<script src="/vendor/xterm/xterm-addon-canvas.js"></script>
+<!-- noVNC 与 guacamole 均为 ES Module，以 module 方式加载后挂到 window -->
+<script type="module">
+  import RFB from '/vendor/novnc/core/rfb.js';
+  window.RFB = RFB;
+</script>
+<script type="module">
+  import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
+  window.Guacamole = Guacamole;
+</script>
+<script src="/js/app.js"></script>
+</body>
+</html>

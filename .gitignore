@@ -1,0 +1,21 @@
+# 编译产物
+remote-connect-manager
+remote-connect-manager-*
+*.exe
+
+# 运行时数据（配置/密钥/截图，含敏感信息）
+data/
+*.db
+*.db-journal
+*.log
+
+# 临时文件
+tmp/
+*.tmp
+cmd_e2e_test/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store

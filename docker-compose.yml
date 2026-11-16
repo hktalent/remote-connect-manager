@@ -1,0 +1,26 @@
+services:
+  remote-connect-manager:
+    image: remote-connect-manager:latest
+    build: .
+    container_name: remote-connect-manager
+    ports:
+      - "8088:8080"
+    environment:
+      - PORT=8080
+      # RDP 走 guacd 服务
+      - GUACD_ADDR=guacd:4822
+    volumes:
+      - ./data:/app/data
+      # 只读挂载宿主机 ~/.ssh，启动时自动导入私钥供选择
+      - ${HOME}/.ssh:/host-ssh:ro
+    extra_hosts:
+      # 允许容器内用 host.docker.internal 访问宿主机上的 Kali 虚拟机/端口转发
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - guacd
+    restart: unless-stopped
+
+  guacd:
+    image: guacamole/guacd:1.5.5
+    container_name: rcm-guacd
+    restart: unless-stopped
