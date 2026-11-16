@@ -119,11 +119,15 @@
       <button id="btn-zoom-reset" title="重置">⟲</button>
       <button id="btn-zoom-in" title="放大">+</button>
       <button id="btn-fullscreen" title="全屏">⛶</button>
+      <button id="btn-minimize" title="最小化到卡片">↘</button>
       <button id="btn-close-session" title="关闭" class="danger">✕</button>
     </div>
   </div>
   <div id="session-body" class="session-body"></div>
 </div>
+
+<!-- 最小化后的会话离屏保活容器 -->
+<div id="session-pool" aria-hidden="true"></div>
 
 <!-- 依赖全部本地化，避免 CDN 不可达导致页面功能失效 -->
 <script src="/vendor/xterm/xterm.js"></script>

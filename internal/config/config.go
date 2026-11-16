@@ -271,9 +271,6 @@ func UploadScreenshot(c *gin.Context) {
 }
 
 func saveScreenshot(id, data string) (string, error) {
-	prefix := "data:image/png;base64,"
-	if len(data) > len(prefix) && data[:len(prefix)] == prefix {
-		data = data[len(prefix):]
-	}
+	// 前端可能提交 png 或 jpeg 的 data URL，统一交由 screenshot 包解析
 	return screenshot.SaveScreenshotData(id, data)
 }

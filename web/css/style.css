@@ -70,6 +70,16 @@ body {
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
 }
 
+/* 该连接有存活会话（含已最小化） */
+.card.live {
+  border-color: #4f8cff;
+  box-shadow: 0 0 0 1px #4f8cff, 0 8px 24px rgba(79,140,255,0.25);
+}
+.card.live .card-type-badge::after {
+  content: ' · 运行中';
+  color: #34d399;
+}
+
 .card-bg {
   position: absolute;
   inset: 0;
@@ -310,6 +320,29 @@ body {
   align-items: center;
   justify-content: center;
   background: #000;
+  position: relative;
+}
+
+/* 会话舞台：缩放作用于内部元素，最小化动画作用于舞台本身 */
+.session-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform, opacity;
+}
+
+/* 最小化后的会话移到这里保活（不可见，但仍保持尺寸与渲染） */
+#session-pool {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
 }
 
 #terminal {

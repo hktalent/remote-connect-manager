@@ -1,6 +1,8 @@
 // ====== State ======
 let connections = [];
-let currentSession = null;
+// 会话按连接 id 保活：最小化只是把窗口缩回卡片位置，连接不中断
+const sessions = new Map();
+let activeSessionId = null;
 let zoomLevel = 1;
 
 const typeIcons = { ssh: '🖥', vnc: '🖱', rdp: '🪟' };
@@ -13,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-keys').addEventListener('click', openKeysModal);
   document.getElementById('config-form').addEventListener('submit', onSaveConfig);
   document.getElementById('btn-close-session').addEventListener('click', closeSession);
+  document.getElementById('btn-minimize').addEventListener('click', minimizeSession);
   document.getElementById('btn-zoom-in').addEventListener('click', () => changeZoom(0.1));
   document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(-0.1));
   document.getElementById('btn-zoom-reset').addEventListener('click', () => setZoom(1));
@@ -30,7 +33,7 @@ function renderCards() {
   grid.innerHTML = '';
   connections.forEach(conn => {
     const card = document.createElement('div');
-    card.className = 'card' + (conn.screenshot ? '' : ' no-screenshot');
+    card.className = 'card' + (conn.screenshot ? '' : ' no-screenshot') + (sessions.has(conn.id) ? ' live' : '');
     card.dataset.id = conn.id;
 
     const bg = document.createElement('div');
@@ -357,45 +360,155 @@ async function deleteKey(name) {
 }
 
 // ====== Session ======
+function activeSession() {
+  return activeSessionId ? sessions.get(activeSessionId) : null;
+}
+
+function sessionPool() {
+  return document.getElementById('session-pool');
+}
+
+function showViewer(sess) {
+  document.getElementById('session-title').textContent =
+    `${sess.conn.name} (${sess.conn.type.toUpperCase()})`;
+  document.getElementById('session-viewer').classList.remove('hidden');
+}
+
+function markCardLive(connId, live) {
+  const card = document.querySelector(`.card[data-id="${connId}"]`);
+  if (card) card.classList.toggle('live', live);
+}
+
 async function openSession(conn) {
+  // 已有存活会话：从卡片位置等比放大回来，不重建连接
+  const alive = sessions.get(conn.id);
+  if (alive) {
+    restoreSession(alive);
+    return;
+  }
+
   // 列表接口不返回密码，这里取完整配置（VNC/RDP 需要密码）
   try {
     const res = await fetch(`/api/connections/${conn.id}`);
     if (res.ok) conn = await res.json();
   } catch (e) {}
-  document.getElementById('session-title').textContent = `${conn.name} (${conn.type.toUpperCase()})`;
-  document.getElementById('session-viewer').classList.remove('hidden');
-  zoomLevel = 1;
+
   const body = document.getElementById('session-body');
   body.innerHTML = '';
+  const stage = document.createElement('div');
+  stage.className = 'session-stage';
+  body.appendChild(stage);
 
-  if (conn.type === 'ssh') {
-    startSSHSession(conn);
-  } else if (conn.type === 'vnc') {
-    startVNCSession(conn);
-  } else if (conn.type === 'rdp') {
-    startRDPSession(conn);
+  let sess = null;
+  if (conn.type === 'ssh') sess = startSSHSession(conn, stage);
+  else if (conn.type === 'vnc') sess = startVNCSession(conn, stage);
+  else if (conn.type === 'rdp') sess = startRDPSession(conn, stage);
+  if (!sess) {
+    body.innerHTML = '';
+    return;
   }
+
+  sessions.set(conn.id, sess);
+  activeSessionId = conn.id;
+  zoomLevel = 1;
+  sess.zoom = 1;
+  showViewer(sess);
+  markCardLive(conn.id, true);
+  startBackgroundUpdater(sess);
 }
 
-function closeSession() {
-  if (currentSession) {
-    // 先截图再关闭，避免断开后画面被清空导致背景图丢失
-    try { currentSession.capture && currentSession.capture(); } catch (e) {}
-    try { currentSession.close(); } catch (e) {}
-    currentSession = null;
+// 计算舞台与卡片之间的等比缩放和位移，最小化/恢复共用
+function stageCardDelta(sess) {
+  const card = document.querySelector(`.card[data-id="${sess.conn.id}"]`);
+  if (!card) return null;
+  const from = sess.stage.getBoundingClientRect();
+  const to = card.getBoundingClientRect();
+  if (!from.width || !from.height || !to.width || !to.height) return null;
+  return {
+    scale: Math.min(to.width / from.width, to.height / from.height),
+    dx: to.left + to.width / 2 - (from.left + from.width / 2),
+    dy: to.top + to.height / 2 - (from.top + from.height / 2),
+  };
+}
+
+// 最小化：等比例缩小并动画归位到该连接的卡片，连接保持存活
+function minimizeSession() {
+  const sess = activeSession();
+  if (!sess) return;
+
+  const delta = stageCardDelta(sess);
+  const header = document.querySelector('.session-header');
+  let anim = null;
+  if (delta) {
+    anim = sess.stage.animate([
+      { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+      { transform: `translate(${delta.dx}px, ${delta.dy}px) scale(${delta.scale})`, opacity: 0.2 },
+    ], { duration: 420, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' });
   }
+  header.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, fill: 'forwards' });
+
+  const finish = () => {
+    if (anim) anim.cancel();
+    header.getAnimations().forEach(a => a.cancel());
+    document.getElementById('session-viewer').classList.add('hidden');
+    // 移到离屏容器保活，后台继续按 10 秒间隔更新卡片背景
+    sessionPool().appendChild(sess.stage);
+    activeSessionId = null;
+  };
+  if (anim) anim.onfinish = finish;
+  else setTimeout(finish, 0);
+}
+
+// 从卡片位置等比放大恢复会话窗口
+function restoreSession(sess) {
+  const body = document.getElementById('session-body');
+  body.innerHTML = '';
+  body.appendChild(sess.stage);
+  showViewer(sess);
+  if (sess.refit) sess.refit();
+
+  activeSessionId = sess.conn.id;
+  zoomLevel = sess.zoom || 1;
+  applyZoom();
+
+  const delta = stageCardDelta(sess);
+  if (delta) {
+    sess.stage.animate([
+      { transform: `translate(${delta.dx}px, ${delta.dy}px) scale(${delta.scale})`, opacity: 0.2 },
+      { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+    ], { duration: 420, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' });
+  }
+  document.querySelector('.session-header')
+    .animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240 });
+}
+
+async function closeSession() {
+  const sess = activeSession();
   document.getElementById('session-viewer').classList.add('hidden');
+  if (!sess) return;
+
+  stopBackgroundUpdater(sess);
+  // 先截图并等上传完成，再断开连接，保证关闭后卡片背景图是最新画面
+  try {
+    const path = await uploadScreenshot(sess.conn.id, snapshotDataUrl(sess));
+    if (path) updateCardBackground(sess.conn.id, path);
+  } catch (e) {}
+
+  sess.closed = true;
+  try { sess.close(); } catch (e) {}
+  try { sess.stage.remove(); } catch (e) {}
+  sessions.delete(sess.conn.id);
+  activeSessionId = null;
+  markCardLive(sess.conn.id, false);
   document.getElementById('session-body').innerHTML = '';
-  loadConnections(); // refresh to update screenshot
+  await loadConnections();
 }
 
 // ====== SSH ======
-function startSSHSession(conn) {
-  const body = document.getElementById('session-body');
+function startSSHSession(conn, stage) {
   const termDiv = document.createElement('div');
   termDiv.id = 'terminal';
-  body.appendChild(termDiv);
+  stage.appendChild(termDiv);
 
   const term = new Terminal({
     cursorBlink: true,
@@ -410,16 +523,33 @@ function startSSHSession(conn) {
     try { term.loadAddon(new CanvasAddon.CanvasAddon()); } catch (e) {}
   }
   term.open(termDiv);
-  fitAddon.fit();
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}`);
   ws.binaryType = 'arraybuffer';
 
-  ws.onopen = () => {
-    const dims = fitAddon.proposeDimensions();
-    ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
+  const fit = () => { try { fitAddon.fit(); } catch (e) {} };
+  const resize = () => {
+    let dims = null;
+    try { dims = fitAddon.proposeDimensions(); } catch (e) {}
+    if (dims && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
+    }
   };
+  const onResize = () => { fit(); resize(); };
+
+  const sess = {
+    conn, stage, element: termDiv, zoom: 1, timer: null, closed: false,
+    snapshot: () => compositeTerminalCanvas(termDiv),
+    refit: onResize,
+    close: () => {
+      sess.closed = true;
+      window.removeEventListener('resize', onResize);
+      try { ws.close(); } catch (e) {}
+    },
+  };
+
+  ws.onopen = () => { fit(); resize(); };
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       term.write(ev.data);
@@ -428,8 +558,8 @@ function startSSHSession(conn) {
     }
   };
   ws.onclose = () => {
-    captureAndSaveScreenshot(conn.id, termDiv);
     term.write('\r\n\x1b[31m[连接已关闭]\x1b[0m');
+    if (!sess.closed) refreshCardBackground(sess);
   };
   ws.onerror = () => term.write('\r\n\x1b[31m[连接错误]\x1b[0m');
 
@@ -437,39 +567,38 @@ function startSSHSession(conn) {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   });
 
-  window.addEventListener('resize', () => {
-    fitAddon.fit();
-    const dims = fitAddon.proposeDimensions();
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
-    }
-  });
-
-  currentSession = {
-    close: () => ws.close(),
-    element: termDiv,
-    capture: () => captureAndSaveScreenshot(conn.id, termDiv),
-  };
+  window.addEventListener('resize', onResize);
+  fit();
+  return sess;
 }
 
 // ====== VNC ======
-function startVNCSession(conn) {
+function startVNCSession(conn, stage) {
   if (!window.RFB) {
     alert('noVNC 尚未加载完成，请稍后重试');
-    return;
+    return null;
   }
-  const body = document.getElementById('session-body');
   const div = document.createElement('div');
   div.id = 'vnc-container';
   div.style.width = '100%';
   div.style.height = '100%';
-  body.appendChild(div);
+  stage.appendChild(div);
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${location.host}/ws/vnc/${conn.id}`;
   const rfb = new window.RFB(div, url);
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
+
+  const sess = {
+    conn, stage, element: div, zoom: 1, timer: null, closed: false,
+    snapshot: () => div.querySelector('canvas'),
+    refit: () => { try { rfb.scaleViewport = true; } catch (e) {} },
+    close: () => {
+      sess.closed = true;
+      try { rfb.disconnect(); } catch (e) {}
+    },
+  };
 
   // VNC 服务器需要密码时自动带出已保存的密码，或提示输入
   rfb.addEventListener('credentialsrequired', () => {
@@ -478,28 +607,23 @@ function startVNCSession(conn) {
   });
 
   rfb.addEventListener('disconnect', () => {
-    captureAndSaveScreenshotFromElement(conn.id, div);
+    if (!sess.closed) refreshCardBackground(sess);
   });
 
-  currentSession = {
-    close: () => rfb.disconnect(),
-    element: div,
-    capture: () => captureAndSaveScreenshotFromElement(conn.id, div),
-  };
+  return sess;
 }
 
 // ====== RDP (Guacamole) ======
-function startRDPSession(conn) {
+function startRDPSession(conn, stage) {
   if (!window.Guacamole) {
     alert('Guacamole 库尚未加载完成，请稍后重试');
-    return;
+    return null;
   }
-  const body = document.getElementById('session-body');
   const div = document.createElement('div');
   div.id = 'rdp-container';
   div.style.width = '100%';
   div.style.height = '100%';
-  body.appendChild(div);
+  stage.appendChild(div);
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const tunnel = new Guacamole.WebSocketTunnel(`${proto}://${location.host}/ws/guacamole/${conn.id}`);
@@ -508,6 +632,16 @@ function startRDPSession(conn) {
   div.appendChild(client.getDisplay().getElement());
   client.getDisplay().getElement().style.display = 'block';
   client.getDisplay().getElement().style.margin = 'auto';
+
+  const sess = {
+    conn, stage, element: div, zoom: 1, timer: null, closed: false,
+    snapshot: () => div.querySelector('canvas'),
+    refit: () => {},
+    close: () => {
+      sess.closed = true;
+      try { client.disconnect(); } catch (e) {}
+    },
+  };
 
   // 握手由后端完成，这里不需要传连接参数
   client.connect('');
@@ -527,21 +661,17 @@ function startRDPSession(conn) {
     console.error('RDP 错误', status);
   };
   client.onend = () => {
-    captureAndSaveScreenshotFromElement(conn.id, div);
+    if (!sess.closed) refreshCardBackground(sess);
   };
 
-  currentSession = {
-    close: () => client.disconnect(),
-    element: div,
-    capture: () => captureAndSaveScreenshotFromElement(conn.id, div),
-  };
+  return sess;
 }
 
 // ====== Screenshot ======
-function captureAndSaveScreenshot(connId, termDiv) {
-  // xterm canvas 渲染器会分层绘制（背景/文字/光标），需要逐层叠加
+// xterm canvas 渲染器会分层绘制（背景/文字/光标），需要逐层叠加
+function compositeTerminalCanvas(termDiv) {
   const layers = Array.from(termDiv.querySelectorAll('.xterm-screen canvas'));
-  if (layers.length === 0) return;
+  if (layers.length === 0) return null;
   const canvas = document.createElement('canvas');
   canvas.width = layers[0].width;
   canvas.height = layers[0].height;
@@ -551,29 +681,115 @@ function captureAndSaveScreenshot(connId, termDiv) {
   layers.forEach(layer => {
     try { ctx.drawImage(layer, 0, 0); } catch (e) {}
   });
-  try {
-    saveScreenshot(connId, canvas.toDataURL('image/png'));
-  } catch (e) {}
+  return canvas;
 }
 
-function captureAndSaveScreenshotFromElement(connId, element) {
-  const canvas = element.querySelector('canvas');
-  if (canvas) {
-    try {
-      const data = canvas.toDataURL('image/png');
-      saveScreenshot(connId, data);
-    } catch (e) {}
+// 降采样后再编码，避免每次更新都上传整屏 PNG
+function canvasToDataUrl(canvas, maxWidth = 1280) {
+  if (!canvas || !canvas.width || !canvas.height) return null;
+  let src = canvas;
+  if (canvas.width > maxWidth) {
+    const scale = maxWidth / canvas.width;
+    const tmp = document.createElement('canvas');
+    tmp.width = maxWidth;
+    tmp.height = Math.max(1, Math.round(canvas.height * scale));
+    tmp.getContext('2d').drawImage(canvas, 0, 0, tmp.width, tmp.height);
+    src = tmp;
   }
+  try { return src.toDataURL('image/jpeg', 0.85); } catch (e) { return null; }
 }
 
-async function saveScreenshot(connId, dataUrl) {
+function snapshotDataUrl(sess) {
+  if (!sess || !sess.snapshot) return null;
+  let canvas = null;
+  try { canvas = sess.snapshot(); } catch (e) { return null; }
+  return canvasToDataUrl(canvas);
+}
+
+async function uploadScreenshot(connId, dataUrl) {
+  if (!dataUrl) return null;
   try {
-    await fetch(`/api/connections/${connId}/screenshot`, {
+    const res = await fetch(`/api/connections/${connId}/screenshot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: dataUrl }),
     });
-  } catch (e) {}
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.screenshot || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 立即截图上传并把该连接卡片背景换成新图
+async function refreshCardBackground(sess) {
+  const path = await uploadScreenshot(sess.conn.id, snapshotDataUrl(sess));
+  if (path) updateCardBackground(sess.conn.id, path);
+}
+
+function updateCardBackground(connId, path) {
+  if (!path) return;
+  const card = document.querySelector(`.card[data-id="${connId}"]`);
+  if (card) {
+    card.classList.remove('no-screenshot');
+    const bg = card.querySelector('.card-bg');
+    if (bg) bg.style.backgroundImage = `url('${path}?t=${Date.now()}')`;
+  }
+  // 同步内存数据，避免下次整表渲染时回退为旧图
+  const c = connections.find(x => x.id === connId);
+  if (c) c.screenshot = path;
+}
+
+// 画面变化检测：降采样成小图后做指纹比对
+function canvasHash(canvas) {
+  if (!canvas || !canvas.width || !canvas.height) return null;
+  const w = 32, h = 18;
+  const tmp = document.createElement('canvas');
+  tmp.width = w;
+  tmp.height = h;
+  const ctx = tmp.getContext('2d', { willReadFrequently: true });
+  try { ctx.drawImage(canvas, 0, 0, w, h); } catch (e) { return null; }
+  let data = null;
+  try { data = ctx.getImageData(0, 0, w, h).data; } catch (e) { return null; }
+  let hash = 2166136261;
+  for (let i = 0; i < data.length; i += 4) {
+    const v = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+    hash = ((hash ^ v) * 16777619) >>> 0;
+  }
+  return hash;
+}
+
+const BG_POLL_MS = 2000;     // 每 2 秒检测一次界面是否变化
+const BG_UPLOAD_MS = 10000;  // 有变化时，最短每 10 秒更新一次卡片背景
+
+function startBackgroundUpdater(sess) {
+  if (sess.timer) return;
+  let baseline = null;
+  let pending = false;
+  let lastUpload = 0;
+  sess.timer = setInterval(() => {
+    if (sess.closed) return;
+    const canvas = sess.snapshot && sess.snapshot();
+    if (!canvas) return;
+    const hash = canvasHash(canvas);
+    if (hash === null) return;
+    if (baseline === null) { baseline = hash; return; }
+    if (hash !== baseline) { baseline = hash; pending = true; }
+    if (!pending) return;
+    const now = Date.now();
+    if (now - lastUpload < BG_UPLOAD_MS) return;
+    pending = false;
+    lastUpload = now;
+    refreshCardBackground(sess);
+  }, BG_POLL_MS);
+}
+
+function stopBackgroundUpdater(sess) {
+  if (sess.timer) {
+    clearInterval(sess.timer);
+    sess.timer = null;
+  }
 }
 
 // ====== Zoom ======
@@ -583,11 +799,17 @@ function changeZoom(delta) {
 
 function setZoom(level) {
   zoomLevel = level;
-  const body = document.getElementById('session-body');
-  if (currentSession && currentSession.element) {
-    currentSession.element.style.transform = `scale(${zoomLevel})`;
-    currentSession.element.style.transformOrigin = 'center center';
-  }
+  const sess = activeSession();
+  if (sess) sess.zoom = level;
+  applyZoom();
+}
+
+// 缩放只作用于舞台内部元素，避免与最小化动画的 transform 冲突
+function applyZoom() {
+  const sess = activeSession();
+  if (!sess || !sess.element) return;
+  sess.element.style.transformOrigin = 'center center';
+  sess.element.style.transform = zoomLevel === 1 ? '' : `scale(${zoomLevel})`;
 }
 
 function toggleFullscreen() {
