@@ -17,6 +17,39 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// Dial 建立到目标主机的 SSH 连接，供 SFTP 与端口转发复用
+func Dial(conn *config.Connection) (*ssh.Client, error) {
+	authMethods := []ssh.AuthMethod{}
+	if conn.AuthType == "key" || conn.AuthType == "" {
+		var signer ssh.Signer
+		var err error
+		if conn.KeyName != "" {
+			signer, err = keys.LoadSigner(conn.KeyName, conn.Password)
+		} else if conn.PrivateKey != "" {
+			signer, err = ssh.ParsePrivateKey([]byte(conn.PrivateKey))
+		}
+		if signer != nil {
+			authMethods = append(authMethods, ssh.PublicKeys(signer))
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	if conn.Password != "" {
+		authMethods = append(authMethods, ssh.Password(conn.Password))
+	}
+	if len(authMethods) == 0 {
+		return nil, fmt.Errorf("没有可用的认证方式：请选择密钥或填写密码")
+	}
+
+	cfg := &ssh.ClientConfig{
+		User:            conn.Username,
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         15 * time.Second,
+	}
+	return ssh.Dial("tcp", fmt.Sprintf("%s:%d", conn.Host, conn.Port), cfg)
+}
+
 type wsClientMsg struct {
 	Type string `json:"type"`
 	Data string `json:"data"`

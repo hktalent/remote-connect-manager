@@ -525,3 +525,86 @@ body {
   background: #161b28;
 }
 .markdown-body hr { border: none; border-top: 1px solid #2a3040; margin: 16px 0; }
+
+/* SFTP 文件管理 */
+.sftp-modal { max-width: 880px; width: 92vw; }
+.sftp-pathbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 24px;
+  border-bottom: 1px solid #2a3040;
+}
+.sftp-pathbar input {
+  flex: 1;
+  background: #0f1419;
+  border: 1px solid #2a3040;
+  color: #e6e6e6;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.sftp-pathbar button {
+  padding: 6px 12px;
+  background: #232a3b;
+  color: #e6e6e6;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sftp-list { padding: 0 !important; max-height: 60vh; overflow-y: auto; }
+.sftp-row {
+  display: grid;
+  grid-template-columns: 22px minmax(120px, 1fr) 90px 150px 90px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 24px;
+  border-bottom: 1px solid #1f2534;
+  font-size: 13px;
+}
+.sftp-row:hover { background: #161b28; }
+.sftp-row .name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sftp-row .name.dir { color: #7fb2ff; }
+.sftp-row .meta { color: #8892a6; font-size: 12px; }
+.sftp-row a { color: #4f8cff; text-decoration: none; margin-right: 8px; }
+.sftp-row button {
+  background: none;
+  border: none;
+  color: #8892a6;
+  cursor: pointer;
+  font-size: 12px;
+}
+.sftp-row button:hover { color: #ff6b6b; }
+.sftp-empty { padding: 20px 24px; color: #8892a6; font-size: 13px; }
+
+/* SSH 端口转发 */
+.tunnel-modal { max-width: 640px; width: 92vw; }
+.tunnel-form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.tunnel-form input {
+  background: #0f1419;
+  border: 1px solid #2a3040;
+  color: #e6e6e6;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.tunnel-form input[name="remote_host"] { flex: 1; min-width: 180px; }
+.tunnel-form input[name="remote_port"] { width: 120px; }
+.tunnel-list .tunnel-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.tunnel-list code { color: #7fb2ff; }
+.tunnel-list .tunnel-item button {
+  background: none;
+  border: none;
+  color: #8892a6;
+  cursor: pointer;
+}
+.tunnel-list .tunnel-item button:hover { color: #ff6b6b; }
+.hint { color: #8892a6; font-size: 12px; margin: 0 0 12px; }

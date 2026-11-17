@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117d">
+<link rel="stylesheet" href="/css/style.css?v=20261117e">
 </head>
 <body>
 <div id="app">
@@ -153,12 +153,53 @@
   </div>
 </div>
 
+<!-- SFTP 文件管理 -->
+<div id="sftp-modal" class="modal hidden">
+  <div class="modal-content sftp-modal">
+    <div class="modal-header">
+      <h2 id="sftp-title">文件管理</h2>
+      <div class="about-actions">
+        <button id="sftp-upload-btn" class="btn-secondary">上传</button>
+        <button id="sftp-mkdir-btn" class="btn-secondary">新建目录</button>
+        <button class="close-btn" onclick="closeSftpModal()">&times;</button>
+      </div>
+    </div>
+    <div class="sftp-pathbar">
+      <button id="sftp-up" title="上级目录">↑</button>
+      <input id="sftp-path" type="text" spellcheck="false" placeholder="/">
+      <button id="sftp-go">转到</button>
+    </div>
+    <div class="modal-body sftp-list" id="sftp-list"></div>
+  </div>
+</div>
+
+<!-- SSH 端口转发 -->
+<div id="tunnel-modal" class="modal hidden">
+  <div class="modal-content tunnel-modal">
+    <div class="modal-header">
+      <h2 id="tunnel-title">端口转发</h2>
+      <button class="close-btn" onclick="closeTunnelModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="tunnel-form" class="tunnel-form">
+        <input name="remote_host" placeholder="目标主机（默认 127.0.0.1）" spellcheck="false">
+        <input name="remote_port" type="number" min="1" max="65535" placeholder="目标端口" required>
+        <button type="submit" class="btn-primary">创建隧道</button>
+      </form>
+      <p class="hint">创建后通过 <code>localhost:&lt;本地端口&gt;</code> 访问；Docker 已映射 20000-20010。</p>
+      <div id="tunnel-list" class="tunnel-list"></div>
+    </div>
+  </div>
+</div>
+
 <!-- Session Viewer -->
 <div id="session-viewer" class="session-viewer hidden">
   <div class="session-header">
     <span id="session-title"></span>
     <div class="session-controls">
       <button id="btn-upload" title="上传文件到远程共享盘" class="hidden">⇪</button>
+      <button id="btn-sftp" title="文件管理（SFTP）" class="hidden">🗂</button>
+      <button id="btn-tunnel" title="端口转发" class="hidden">⇄</button>
       <button id="btn-zoom-out" title="缩小">−</button>
       <button id="btn-zoom-reset" title="重置">⟲</button>
       <button id="btn-zoom-in" title="放大">+</button>
@@ -186,6 +227,6 @@
   import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
   window.Guacamole = Guacamole;
 </script>
-<script src="/js/app.js?v=20261117d"></script>
+<script src="/js/app.js?v=20261117e"></script>
 </body>
 </html>

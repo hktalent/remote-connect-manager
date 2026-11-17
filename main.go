@@ -11,7 +11,9 @@ import (
 	"remote-connect-manager/internal/keys"
 	"remote-connect-manager/internal/rdp"
 	"remote-connect-manager/internal/screenshot"
+	sftpx "remote-connect-manager/internal/sftp"
 	"remote-connect-manager/internal/ssh"
+	"remote-connect-manager/internal/tunnel"
 	"remote-connect-manager/internal/vnc"
 )
 
@@ -66,6 +68,18 @@ func main() {
 		api.GET("/readme", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"markdown": string(readmeMD)})
 		})
+
+		// SFTP 文件管理
+		api.GET("/sftp/:id/list", sftpx.List)
+		api.GET("/sftp/:id/download", sftpx.Download)
+		api.POST("/sftp/:id/upload", sftpx.Upload)
+		api.POST("/sftp/:id/mkdir", sftpx.Mkdir)
+		api.POST("/sftp/:id/remove", sftpx.Remove)
+
+		// SSH 本地端口转发
+		api.GET("/tunnels", tunnel.List)
+		api.POST("/tunnels", tunnel.Create)
+		api.DELETE("/tunnels/:id", tunnel.Delete)
 	}
 
 	// WebSocket endpoints

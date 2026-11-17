@@ -22,6 +22,28 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
   document.getElementById('btn-about').addEventListener('click', openAboutModal);
   document.getElementById('btn-upload').addEventListener('click', pickFileForUpload);
+  document.getElementById('btn-sftp').addEventListener('click', () => {
+    const s = activeSession();
+    if (s) openSftpModal(s.conn);
+  });
+  document.getElementById('btn-tunnel').addEventListener('click', () => {
+    const s = activeSession();
+    if (s) openTunnelModal(s.conn);
+  });
+  document.getElementById('sftp-upload-btn').addEventListener('click', uploadSftpFile);
+  document.getElementById('sftp-mkdir-btn').addEventListener('click', mkdirSftp);
+  document.getElementById('sftp-up').addEventListener('click', () => {
+    if (!sftpCurrent) return;
+    const parent = sftpCurrent.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+    loadSftp(parent);
+  });
+  document.getElementById('sftp-go').addEventListener('click', () => {
+    loadSftp(document.getElementById('sftp-path').value.trim() || '/');
+  });
+  document.getElementById('sftp-path').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadSftp(e.target.value.trim() || '/');
+  });
+  document.getElementById('tunnel-form').addEventListener('submit', createTunnel);
   // 系统剪贴板粘贴（Cmd+V / Ctrl+V）直接转发到当前会话
   document.addEventListener('paste', pasteToSession, true);
 });
@@ -398,8 +420,11 @@ function sessionPool() {
 function showViewer(sess) {
   document.getElementById('session-title').textContent =
     `${sess.conn.name} (${sess.conn.type.toUpperCase()})`;
-  // 文件上传只对 RDP（共享盘）提供
-  document.getElementById('btn-upload').classList.toggle('hidden', sess.conn.type !== 'rdp');
+  // 文件上传只对 RDP（共享盘）提供；SFTP 与端口转发只对 SSH 提供
+  const type = sess.conn.type;
+  document.getElementById('btn-upload').classList.toggle('hidden', type !== 'rdp');
+  document.getElementById('btn-sftp').classList.toggle('hidden', type !== 'ssh');
+  document.getElementById('btn-tunnel').classList.toggle('hidden', type !== 'ssh');
   document.getElementById('session-viewer').classList.remove('hidden');
 }
 
@@ -709,8 +734,7 @@ function startGuacSession(conn, stage) {
   };
 
   // 远端剪贴板 → 本地系统剪贴板
-  client.onclipboard = (stream, mimetype) => {
-    if (mimetype !== 'text/plain') {
+  client.onclipboard = (stream, mimetype) => {    if (mimetype !== 'text/plain') {
       try { stream.sendAck('Unsupported', 0x0100); } catch (e) {}
       return;
     }
@@ -718,6 +742,19 @@ function startGuacSession(conn, stage) {
     let text = '';
     reader.ontext = (chunk) => { text += chunk; };
     reader.onend = () => { if (text) writeLocalClipboard(text); };
+  };
+
+  // RDP 共享盘：远端写入的文件以 body 指令下发，直接触发浏览器下载
+  client.onfilesystem = (object, name) => {
+    if (name !== 'rcm') return;
+    object.onbody = (stream, mimetype, filename) => {
+      try {
+        const reader = new Guacamole.BlobReader(stream, mimetype || 'application/octet-stream');
+        reader.onend = () => saveBlob(reader.getBlob(), filename);
+      } catch (e) {
+        console.error('共享盘下载失败', e);
+      }
+    };
   };
 
   // 握手由后端完成，这里不需要传连接参数
@@ -1079,4 +1116,213 @@ function renderMarkdown(md) {
   }
 
   return out.join('\n');
+}
+
+// ====== SFTP 文件管理 ======
+let sftpConn = null;
+let sftpCurrent = '';
+
+function openSftpModal(conn) {
+  sftpConn = conn;
+  sftpCurrent = '';
+  document.getElementById('sftp-title').textContent = `文件管理 - ${conn.name}`;
+  document.getElementById('sftp-modal').classList.remove('hidden');
+  loadSftp('.');
+}
+
+function closeSftpModal() {
+  document.getElementById('sftp-modal').classList.add('hidden');
+}
+
+async function loadSftp(p) {
+  if (!sftpConn) return;
+  const list = document.getElementById('sftp-list');
+  list.innerHTML = '<div class="sftp-empty">加载中…</div>';
+  try {
+    const res = await fetch(`/api/sftp/${sftpConn.id}/list?path=${encodeURIComponent(p)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    sftpCurrent = data.path;
+    document.getElementById('sftp-path').value = data.path;
+    renderSftpEntries(data.entries || []);
+  } catch (e) {
+    list.innerHTML = `<div class="sftp-empty">${escapeHTML(e.message)}</div>`;
+  }
+}
+
+function renderSftpEntries(entries) {
+  const list = document.getElementById('sftp-list');
+  if (!entries.length) {
+    list.innerHTML = '<div class="sftp-empty">空目录</div>';
+    return;
+  }
+  list.innerHTML = entries.map((e) => `
+    <div class="sftp-row">
+      <span>${e.dir ? '📁' : '📄'}</span>
+      <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}">${escapeHTML(e.name)}</span>
+      <span class="meta">${e.dir ? '-' : formatSize(e.size)}</span>
+      <span class="meta">${(e.mod_time || '').replace('T', ' ').slice(0, 19)}</span>
+      <span>${e.dir ? '' : `<a href="/api/sftp/${sftpConn.id}/download?path=${encodeURIComponent(e.path)}" download>下载</a>`}<button data-del="${escapeHTML(e.path)}" data-dir="${e.dir}" title="删除">✕</button></span>
+    </div>`).join('');
+
+  list.querySelectorAll('.name').forEach((el) => {
+    el.addEventListener('click', () => {
+      if (el.dataset.dir === 'true') loadSftp(el.dataset.path);
+      else downloadSftp(el.dataset.path);
+    });
+  });
+  list.querySelectorAll('[data-del]').forEach((el) => {
+    el.addEventListener('click', () => removeSftp(el.dataset.del, el.dataset.dir === 'true'));
+  });
+}
+
+function downloadSftp(p) {
+  const a = document.createElement('a');
+  a.href = `/api/sftp/${sftpConn.id}/download?path=${encodeURIComponent(p)}`;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function uploadSftpFile() {
+  if (!sftpConn) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.onchange = async () => {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('path', sftpCurrent || '/');
+    try {
+      const res = await fetch(`/api/sftp/${sftpConn.id}/upload`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert('上传失败：' + (d.error || res.statusText));
+      }
+    } catch (e) {
+      alert('上传失败：' + e.message);
+    }
+    loadSftp(sftpCurrent);
+  };
+  input.click();
+}
+
+async function mkdirSftp() {
+  if (!sftpConn) return;
+  const name = prompt('新目录名称');
+  if (!name) return;
+  const p = `${sftpCurrent.replace(/\/+$/, '')}/${name}`;
+  const res = await fetch(`/api/sftp/${sftpConn.id}/mkdir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: p }),
+  });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    alert('创建失败：' + (d.error || res.statusText));
+  }
+  loadSftp(sftpCurrent);
+}
+
+async function removeSftp(p, isDir) {
+  if (!confirm(`确定删除 ${p}${isDir ? '（目录）' : ''}？`)) return;
+  const res = await fetch(`/api/sftp/${sftpConn.id}/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: p, dir: isDir }),
+  });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    alert('删除失败：' + (d.error || res.statusText));
+  }
+  loadSftp(sftpCurrent);
+}
+
+function formatSize(n) {
+  if (!n && n !== 0) return '-';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// 触发浏览器保存 Blob（RDP 共享盘下载）
+function saveBlob(blob, filename) {
+  const base = (filename || 'download').split(/[\\/]/).pop() || 'download';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = base;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// ====== SSH 端口转发 ======
+let tunnelConn = null;
+
+function openTunnelModal(conn) {
+  tunnelConn = conn;
+  document.getElementById('tunnel-title').textContent = `端口转发 - ${conn.name}`;
+  document.getElementById('tunnel-modal').classList.remove('hidden');
+  loadTunnels();
+}
+
+function closeTunnelModal() {
+  document.getElementById('tunnel-modal').classList.add('hidden');
+}
+
+async function loadTunnels() {
+  const box = document.getElementById('tunnel-list');
+  box.innerHTML = '<div class="hint">加载中…</div>';
+  try {
+    const res = await fetch('/api/tunnels');
+    const data = await res.json();
+    const list = data.tunnels || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="hint">暂无隧道</div>';
+      return;
+    }
+    box.innerHTML = list.map((t) => `
+      <div class="tunnel-item">
+        <span>${escapeHTML(t.connection_name)} → <code>localhost:${t.local_port}</code> → ${escapeHTML(t.remote_host)}:${t.remote_port}</span>
+        <button data-tunnel="${escapeHTML(t.id)}" title="删除">✕</button>
+      </div>`).join('');
+    box.querySelectorAll('[data-tunnel]').forEach((el) => {
+      el.addEventListener('click', () => deleteTunnel(el.dataset.tunnel));
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="hint">加载失败：${escapeHTML(e.message)}</div>`;
+  }
+}
+
+async function createTunnel(e) {
+  e.preventDefault();
+  if (!tunnelConn) return;
+  const form = e.target;
+  const host = form.remote_host.value.trim();
+  const port = parseInt(form.remote_port.value);
+  if (!port) return;
+  const res = await fetch('/api/tunnels', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ connection_id: tunnelConn.id, remote_host: host, remote_port: port }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert('创建失败：' + (data.error || res.statusText));
+    return;
+  }
+  form.remote_host.value = '';
+  form.remote_port.value = '';
+  loadTunnels();
+}
+
+async function deleteTunnel(id) {
+  if (!confirm('关闭该隧道？')) return;
+  await fetch(`/api/tunnels/${id}`, { method: 'DELETE' });
+  loadTunnels();
 }

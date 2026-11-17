@@ -5,6 +5,8 @@ services:
     container_name: remote-connect-manager
     ports:
       - "8088:8080"
+      # SSH 端口转发：容器内 20000-20010 映射到宿主机同名端口
+      - "20000-20010:20000-20010"
     environment:
       - PORT=8080
       # RDP 走 guacd 服务
