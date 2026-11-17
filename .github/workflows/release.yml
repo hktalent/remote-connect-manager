@@ -39,7 +39,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          # 始终与 go.mod 的 go 指令保持一致，避免依赖升级后版本过低
+          go-version-file: go.mod
           cache: false
 
       # 前端已通过 embed.FS 打进二进制；依赖走仓库内的 vendor/，无需联网拉模块
