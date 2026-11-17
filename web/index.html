@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117b">
+<link rel="stylesheet" href="/css/style.css?v=20261117c">
 </head>
 <body>
 <div id="app">
@@ -14,10 +14,22 @@
     <div class="actions">
       <button id="btn-add" class="btn-primary">+ 新建连接</button>
       <button id="btn-keys" class="btn-secondary">密钥管理</button>
+      <button id="btn-about" class="btn-secondary">关于</button>
     </div>
   </header>
 
   <main id="card-grid" class="card-grid"></main>
+
+  <footer class="app-footer">
+    <nav>
+      <a href="https://stock.51pwn.com/" target="_blank" rel="noopener noreferrer">选股策略</a>
+      <a href="https://chat.51pwn.com/" target="_blank" rel="noopener noreferrer">高匿聊天</a>
+      <a href="https://gp.51pwn.com/" target="_blank" rel="noopener noreferrer">智见股市</a>
+      <a href="https://aitag.51pwn.com" target="_blank" rel="noopener noreferrer">AI Tags</a>
+      <a href="https://vi.51pwn.com/" target="_blank" rel="noopener noreferrer">见到你</a>
+    </nav>
+    <a href="https://www.github.com/hktalent/remote-connect-manager" target="_blank" rel="noopener noreferrer">GitHub</a>
+  </footer>
 </div>
 
 <!-- Config Modal -->
@@ -118,6 +130,20 @@
   </div>
 </div>
 
+<!-- About Modal -->
+<div id="about-modal" class="modal hidden">
+  <div class="modal-content readme-modal">
+    <div class="modal-header">
+      <h2>关于</h2>
+      <div class="about-actions">
+        <a class="btn-secondary" href="https://www.github.com/hktalent/remote-connect-manager" target="_blank" rel="noopener noreferrer">GitHub 仓库</a>
+        <button class="close-btn" onclick="closeAboutModal()">&times;</button>
+      </div>
+    </div>
+    <div class="modal-body markdown-body" id="readme-content">加载中…</div>
+  </div>
+</div>
+
 <!-- Session Viewer -->
 <div id="session-viewer" class="session-viewer hidden">
   <div class="session-header">
@@ -150,6 +176,6 @@
   import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
   window.Guacamole = Guacamole;
 </script>
-<script src="/js/app.js?v=20261117b"></script>
+<script src="/js/app.js?v=20261117c"></script>
 </body>
 </html>

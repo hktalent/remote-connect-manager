@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(-0.1));
   document.getElementById('btn-zoom-reset').addEventListener('click', () => setZoom(1));
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
+  document.getElementById('btn-about').addEventListener('click', openAboutModal);
   // 系统剪贴板粘贴（Cmd+V / Ctrl+V）直接转发到当前会话
   document.addEventListener('paste', pasteToSession, true);
 });
@@ -866,4 +867,146 @@ function toggleFullscreen() {
   } else {
     document.exitFullscreen?.();
   }
+}
+
+// ====== 关于（渲染 README） ======
+const REPO_URL = 'https://github.com/hktalent/remote-connect-manager';
+
+async function openAboutModal() {
+  document.getElementById('about-modal').classList.remove('hidden');
+  const box = document.getElementById('readme-content');
+  if (box.dataset.loaded === '1') return;
+  try {
+    const res = await fetch('/api/readme');
+    const data = await res.json();
+    box.innerHTML = renderMarkdown(data.markdown || '');
+    box.dataset.loaded = '1';
+  } catch (e) {
+    box.textContent = 'README 加载失败：' + e.message;
+  }
+}
+
+function closeAboutModal() {
+  document.getElementById('about-modal').classList.add('hidden');
+}
+
+function escapeHTML(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 行内格式：图片、链接、行内代码、粗体、斜体
+function renderInline(text) {
+  let s = escapeHTML(text);
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, src) => {
+    const url = /^https?:\/\//.test(src)
+      ? src
+      : `https://raw.githubusercontent.com/hktalent/remote-connect-manager/main/${src.replace(/^\.\//, '')}`;
+    return `<img alt="${alt}" src="${url}">`;
+  });
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+    const url = /^(https?:|#|\/)/.test(href)
+      ? href
+      : `${REPO_URL}/blob/main/${href.replace(/^\.\//, '')}`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  return s;
+}
+
+// 轻量 Markdown 渲染：覆盖 README 用到的标题、列表、表格、代码块、引用、分割线
+function renderMarkdown(md) {
+  const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+
+  const isTableSep = (l) => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(l) && l.includes('-');
+  const isTableStart = (idx) => lines[idx] && lines[idx].includes('|')
+    && idx + 1 < lines.length && isTableSep(lines[idx + 1]);
+  const splitRow = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+  const isListStart = (l) => /^\s*([-*+]|\d+\.)\s+/.test(l);
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    // 代码块
+    if (/^```/.test(line)) {
+      const lang = line.slice(3).trim();
+      i++;
+      const buf = [];
+      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;
+      out.push(`<pre><code class="lang-${escapeHTML(lang)}">${escapeHTML(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    // 标题
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      out.push(`<h${h[1].length}>${renderInline(h[2])}</h${h[1].length}>`);
+      i++;
+      continue;
+    }
+
+    // 分割线
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
+
+    // 表格
+    if (isTableStart(i)) {
+      const head = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      out.push('<table><thead><tr>' + head.map((c) => `<th>${renderInline(c)}</th>`).join('') + '</tr></thead><tbody>'
+        + rows.map((r) => '<tr>' + r.map((c) => `<td>${renderInline(c)}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table>');
+      continue;
+    }
+
+    // 引用
+    if (/^>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^>\s?/, ''));
+        i++;
+      }
+      out.push(`<blockquote>${renderInline(buf.join(' '))}</blockquote>`);
+      continue;
+    }
+
+    // 列表
+    if (isListStart(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items = [];
+      while (i < lines.length && (ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/).test(lines[i])) {
+        items.push(lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, ''));
+        i++;
+        // 缩进续行并入上一条
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !isListStart(lines[i])) {
+          items[items.length - 1] += ' ' + lines[i].trim();
+          i++;
+        }
+      }
+      const tag = ordered ? 'ol' : 'ul';
+      out.push(`<${tag}>` + items.map((t) => `<li>${renderInline(t)}</li>`).join('') + `</${tag}>`);
+      continue;
+    }
+
+    // 段落
+    const buf = [];
+    while (i < lines.length && lines[i].trim()
+      && !/^(```|#{1,6}\s|>\s?)/.test(lines[i])
+      && !isListStart(lines[i]) && !isTableStart(i)) {
+      buf.push(lines[i].trim());
+      i++;
+    }
+    if (buf.length) out.push(`<p>${renderInline(buf.join(' '))}</p>`);
+  }
+
+  return out.join('\n');
 }

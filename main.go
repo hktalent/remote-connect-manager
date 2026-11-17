@@ -18,6 +18,9 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+//go:embed README.md
+var readmeMD []byte
+
 // version 由发布工作流通过 -ldflags "-X main.version=..." 注入
 var version = "dev"
 
@@ -58,6 +61,11 @@ func main() {
 		api.GET("/keys/:name/public", keys.GetPublicKey)
 		api.POST("/keys/import", keys.ImportKey)
 		api.POST("/keys/scan", keys.ScanKeys)
+
+		// 项目 README，供「关于」弹窗渲染
+		api.GET("/readme", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"markdown": string(readmeMD)})
+		})
 	}
 
 	// WebSocket endpoints

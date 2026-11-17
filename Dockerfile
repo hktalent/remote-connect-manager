@@ -7,6 +7,7 @@ COPY vendor ./vendor
 COPY main.go ./
 COPY internal ./internal
 COPY web ./web
+COPY README.md ./
 RUN CGO_ENABLED=0 GOFLAGS=-mod=vendor go build -o remote-connect-manager .
 
 # 运行阶段
