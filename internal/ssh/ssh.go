@@ -3,7 +3,9 @@ package ssh
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -161,10 +163,52 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 
-	go pumpToWS(ws, stdout)
-	go pumpToWS(ws, stderr)
-
+	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取
+	// 边界可能把多字节字符截断，浏览器会以 1007 关闭连接（tmux 等全屏程序
+	// 输出量大、多字节字符多，最容易触发）。同时只保留一个写协程，避免
+	// stdout/stderr 并发写同一条 WebSocket。
 	done := make(chan struct{})
+	out := make(chan []byte, 64)
+	var readers sync.WaitGroup
+
+	pumpFrom := func(r io.Reader) {
+		defer readers.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				select {
+				case out <- chunk:
+				case <-done:
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+
+	readers.Add(2)
+	go pumpFrom(stdout)
+	go pumpFrom(stderr)
+	go func() {
+		readers.Wait()
+		close(out)
+	}()
+
+	go func() {
+		for chunk := range out {
+			if err := ws.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
+				ws.Close()
+				return
+			}
+		}
+		ws.Close()
+	}()
+
 	go func() {
 		for {
 			_, data, err := ws.ReadMessage()
@@ -182,17 +226,4 @@ func HandleSSH(c *gin.Context) {
 	}()
 
 	<-done
-}
-
-func pumpToWS(ws *websocket.Conn, r interface{ Read([]byte) (int, error) }) {
-	buf := make([]byte, 4096)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			ws.WriteMessage(websocket.TextMessage, buf[:n])
-		}
-		if err != nil {
-			break
-		}
-	}
 }
