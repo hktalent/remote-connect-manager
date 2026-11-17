@@ -93,7 +93,9 @@ func HandleGuacamoleTunnel(c *gin.Context) {
 	// 3) 客户端能力与显示尺寸
 	var sb strings.Builder
 	sb.WriteString(guacEncode([]string{"size", strconv.Itoa(conn.Width), strconv.Itoa(conn.Height), "96"}))
-	sb.WriteString(guacEncode([]string{"image", "image/png", "image/jpeg"}))
+	// 优先声明有损格式：guacd 会按顺序选第一个支持的编码，
+	// PNG 放前面会导致大块画面走无损编码，带宽高、易卡顿
+	sb.WriteString(guacEncode([]string{"image", "image/webp", "image/jpeg", "image/png"}))
 	sb.WriteString(guacEncode([]string{"video"}))
 	sb.WriteString(guacEncode([]string{"audio"}))
 	sb.WriteString(guacEncode([]string{"timezone", "Asia/Shanghai"}))
@@ -292,6 +294,8 @@ func argValue(name string, conn *config.Connection) string {
 			return conn.Security
 		}
 		return "any"
+	case "force-lossless":
+		return "false"
 	case "ignore-cert":
 		return "true"
 	case "disable-auth":

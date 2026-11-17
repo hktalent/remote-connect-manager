@@ -130,6 +130,7 @@ async function openConfigModal(id) {
       form.password.value = conn.password || '';
       form.width.value = conn.width || 1280;
       form.height.value = conn.height || 720;
+      form.color_depth.value = conn.color_depth || 24;
     }
   } else {
     form.id.value = '';
@@ -159,6 +160,8 @@ function onTypeChange() {
   const authSection = document.getElementById('auth-section');
   authSection.style.display = '';
   document.getElementById('auth-type').parentElement.classList.toggle('hidden', type !== 'ssh');
+  // 画质（色深）只对 RDP 生效
+  document.getElementById('quality-row').classList.toggle('hidden', type !== 'rdp');
   if (type === 'ssh') {
     onAuthChange();
   } else {
@@ -226,6 +229,7 @@ async function onSaveConfig(e) {
     password: form.password.value,
     width: parseInt(form.width.value),
     height: parseInt(form.height.value),
+    color_depth: parseInt(form.color_depth.value) || 24,
   };
   const id = form.id.value;
   const url = id ? `/api/connections/${id}` : '/api/connections';

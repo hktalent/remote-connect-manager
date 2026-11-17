@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117">
+<link rel="stylesheet" href="/css/style.css?v=20261117b">
 </head>
 <body>
 <div id="app">
@@ -82,6 +82,14 @@
         <label>高度</label>
         <input type="number" name="height" value="720">
       </div>
+      <div class="form-row" id="quality-row">
+        <label>画质</label>
+        <select name="color_depth">
+          <option value="24">24 位（高清）</option>
+          <option value="16" selected>16 位（推荐，省带宽）</option>
+          <option value="8">8 位（极速，画质较低）</option>
+        </select>
+      </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn-secondary" onclick="closeModal()">取消</button>
@@ -142,6 +150,6 @@
   import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
   window.Guacamole = Guacamole;
 </script>
-<script src="/js/app.js?v=20261117"></script>
+<script src="/js/app.js?v=20261117b"></script>
 </body>
 </html>
