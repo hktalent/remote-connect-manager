@@ -137,7 +137,19 @@ func Upload(c *gin.Context) {
 	}
 	defer src.Close()
 
+	// rel 为浏览器拖拽/粘贴上传时的相对路径（文件夹上传会带子目录），
+	// 缺省时退回文件名
 	target := path.Join(dir, fh.Filename)
+	if rel := c.PostForm("rel"); rel != "" {
+		target = path.Join(dir, rel)
+	}
+	// 文件夹上传需要先补齐父目录
+	if parent := path.Dir(target); parent != "." && parent != "/" {
+		if err := sc.MkdirAll(parent); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	dst, err := sc.Create(target)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

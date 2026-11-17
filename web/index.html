@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117g">
+<link rel="stylesheet" href="/css/style.css?v=20261117j">
 </head>
 <body>
 <div id="app">
@@ -160,6 +160,7 @@
       <h2 id="sftp-title">文件管理</h2>
       <div class="about-actions">
         <button id="sftp-upload-btn" class="btn-secondary">上传</button>
+        <button id="sftp-sync-btn" class="btn-secondary" title="把当前目录同步到本地文件夹（Chrome / Edge）">同步到本地</button>
         <button id="sftp-mkdir-btn" class="btn-secondary">新建目录</button>
         <button class="close-btn" onclick="closeSftpModal()">&times;</button>
       </div>
@@ -169,6 +170,7 @@
       <input id="sftp-path" type="text" spellcheck="false" placeholder="/">
       <button id="sftp-go">转到</button>
     </div>
+    <p class="hint">文件可直接拖到桌面或本地文件夹；「同步到本地」会把当前目录整个写入你选择的本地文件夹。</p>
     <div class="modal-body sftp-list" id="sftp-list"></div>
   </div>
 </div>
@@ -180,6 +182,7 @@
       <h2 id="drive-title">共享盘</h2>
       <div class="about-actions">
         <button id="drive-refresh" class="btn-secondary">刷新</button>
+        <button id="drive-sync-btn" class="btn-secondary" title="把当前目录同步到本地文件夹（Chrome / Edge）">同步到本地</button>
         <button class="close-btn" onclick="closeDriveModal()">&times;</button>
       </div>
     </div>
@@ -187,7 +190,7 @@
       <button id="drive-up" title="上级目录">↑</button>
       <input id="drive-path" type="text" spellcheck="false" placeholder="/" readonly>
     </div>
-    <p class="hint">把远端桌面里的文件复制/拖入共享盘（Windows: \\tsclient\rcm，Linux: ~/thinclient_drives），即可在此下载。</p>
+    <p class="hint">把远端桌面里的文件复制/拖入共享盘（Windows: \\tsclient\rcm，Linux: ~/thinclient_drives），即可在此下载；文件也能直接拖到桌面或本地文件夹。</p>
     <div class="modal-body sftp-list" id="drive-list"></div>
   </div>
 </div>
@@ -234,6 +237,20 @@
 <!-- 最小化后的会话离屏保活容器 -->
 <div id="session-pool" aria-hidden="true"></div>
 
+<!-- 拖拽/粘贴上传进度浮层 -->
+<div id="upload-panel" class="upload-panel hidden">
+  <div class="upload-panel-head">
+    <span id="upload-title">上传</span>
+    <button id="upload-close" title="关闭">&times;</button>
+  </div>
+  <div class="upload-bar"><div id="upload-bar-fill"></div></div>
+  <div id="upload-status" class="upload-status"></div>
+  <div id="upload-errors" class="upload-errors"></div>
+</div>
+
+<!-- 拖拽到 SSH 会话时的提示遮罩 -->
+<div id="drop-hint" class="drop-hint hidden">松开鼠标上传到当前目录</div>
+
 <!-- 依赖全部本地化，避免 CDN 不可达导致页面功能失效 -->
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/xterm-addon-fit.js"></script>
@@ -247,6 +264,6 @@
   import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
   window.Guacamole = Guacamole;
 </script>
-<script src="/js/app.js?v=20261117g"></script>
+<script src="/js/app.js?v=20261117l"></script>
 </body>
 </html>

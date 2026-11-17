@@ -36,6 +36,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('sftp-upload-btn').addEventListener('click', uploadSftpFile);
   document.getElementById('sftp-mkdir-btn').addEventListener('click', mkdirSftp);
+  document.getElementById('sftp-sync-btn').addEventListener('click', () => {
+    if (!sftpConn) return;
+    syncToLocal(sftpSource(sftpConn.id), sftpCurrent || '.');
+  });
+  document.getElementById('drive-sync-btn').addEventListener('click', () => {
+    syncToLocal(driveSource(), driveCurrent || '');
+  });
   document.getElementById('sftp-up').addEventListener('click', () => {
     if (!sftpCurrent) return;
     const parent = sftpCurrent.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
@@ -56,7 +63,29 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   // 系统剪贴板粘贴（Cmd+V / Ctrl+V）直接转发到当前会话
   document.addEventListener('paste', pasteToSession, true);
+  // 系统复制命令（Cmd+C / 菜单复制）把终端选区写入系统剪贴板
+  document.addEventListener('copy', copySessionSelection, true);
+  // 拖拽文件/文件夹上传（仅 SSH 会话）
+  const viewer = document.getElementById('session-viewer');
+  viewer.addEventListener('dragover', onDragOver);
+  viewer.addEventListener('dragleave', onDragLeave);
+  viewer.addEventListener('drop', onDrop);
+  document.getElementById('upload-close').addEventListener('click', closeUploadPanel);
 });
+
+// 浏览器菜单或系统复制快捷键触发：把会话里选中的文本写进剪贴板
+function copySessionSelection(e) {
+  // 弹窗里的输入框保留浏览器默认复制
+  if (e.target && e.target.closest && e.target.closest('.modal')) return;
+  const sess = activeSession();
+  if (!sess || typeof sess.getSelection !== 'function') return;
+  const text = sess.getSelection();
+  if (!text) return;
+  if (e.clipboardData) {
+    e.clipboardData.setData('text/plain', text);
+    e.preventDefault();
+  }
+}
 
 // 捕获阶段处理粘贴：避免依赖终端内部 textarea 是否获得焦点
 function pasteToSession(e) {
@@ -65,13 +94,43 @@ function pasteToSession(e) {
   // 弹窗里的输入框保留浏览器默认粘贴；xterm 的隐藏 textarea 交给会话处理
   if (e.target && e.target.closest && e.target.closest('.modal')) return;
   const sess = activeSession();
-  if (!sess || typeof sess.paste !== 'function') return;
+  if (!sess) return;
+
+  // 剪贴板里是文件：SSH 会话直接上传，其余协议提示不支持
+  const files = clipboardFiles(e.clipboardData || window.clipboardData);
+  if (files.length) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (sess.conn.type === 'ssh') {
+      uploadItemsToSession(sess, files.map((f) => ({ file: f, rel: f.name })));
+    } else {
+      showUploadUnsupported();
+    }
+    return;
+  }
+
+  if (typeof sess.paste !== 'function') return;
   const cd = e.clipboardData || window.clipboardData;
   const text = cd ? cd.getData('text') : '';
   if (!text) return;
   e.preventDefault();
   e.stopPropagation();
   sess.paste(text);
+}
+
+// clipboardFiles 从剪贴板取出文件列表（浏览器对普通文件的粘贴支持不一致，能取到就用）
+function clipboardFiles(cd) {
+  if (!cd) return [];
+  if (cd.files && cd.files.length) return Array.from(cd.files);
+  const out = [];
+  if (cd.items) {
+    for (const it of Array.from(cd.items)) {
+      if (it.kind !== 'file') continue;
+      const f = it.getAsFile ? it.getAsFile() : null;
+      if (f) out.push(f);
+    }
+  }
+  return out;
 }
 
 async function loadConnections() {
@@ -589,6 +648,21 @@ function startSSHSession(conn, stage) {
   }
   term.open(termDiv);
 
+  // canvas 渲染的选区不是 DOM 选区，浏览器原生 Cmd+C 拷不到；
+  // macOS 用 Cmd+C，Windows/Linux 用 Ctrl+Shift+C（Ctrl+C 必须留给 SIGINT）
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const key = String(e.key || '').toLowerCase();
+    const macCopy = e.metaKey && !e.ctrlKey && !e.altKey && key === 'c';
+    const winCopy = e.ctrlKey && e.shiftKey && !e.metaKey && key === 'c';
+    if (!macCopy && !winCopy) return true;
+    const sel = term.getSelection();
+    if (!sel) return true;
+    writeLocalClipboard(sel);
+    e.preventDefault();
+    return false;
+  });
+
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}`);
   ws.binaryType = 'arraybuffer';
@@ -607,6 +681,7 @@ function startSSHSession(conn, stage) {
     conn, stage, element: termDiv, zoom: 1, timer: null, closed: false,
     snapshot: () => compositeTerminalCanvas(termDiv),
     refit: onResize,
+    getSelection: () => term.getSelection(),
     paste: (text) => {
       try { term.paste(text); } catch (e) {
         if (ws.readyState === WebSocket.OPEN) ws.send(text);
@@ -697,6 +772,12 @@ function startVNCSession(conn, stage) {
 
   rfb.addEventListener('disconnect', () => {
     if (!sess.closed) refreshCardBackground(sess);
+  });
+
+  // 远端桌面里复制文本 → 本地系统剪贴板
+  rfb.addEventListener('clipboard', (e) => {
+    const text = e.detail && e.detail.text;
+    if (text) writeLocalClipboard(text);
   });
 
   return sess;
@@ -1180,7 +1261,7 @@ function renderSftpEntries(entries) {
   list.innerHTML = entries.map((e) => `
     <div class="sftp-row">
       <span>${e.dir ? '📁' : '📄'}</span>
-      <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}">${escapeHTML(e.name)}</span>
+      <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}" data-name="${escapeHTML(e.name)}">${escapeHTML(e.name)}</span>
       <span class="meta">${e.dir ? '-' : formatSize(e.size)}</span>
       <span class="meta">${(e.mod_time || '').replace('T', ' ').slice(0, 19)}</span>
       <span>${e.dir ? '' : `<a href="/api/sftp/${sftpConn.id}/download?path=${encodeURIComponent(e.path)}" download>下载</a>`}<button data-del="${escapeHTML(e.path)}" data-dir="${e.dir}" title="删除">✕</button></span>
@@ -1191,6 +1272,9 @@ function renderSftpEntries(entries) {
       if (el.dataset.dir === 'true') loadSftp(el.dataset.path);
       else downloadSftp(el.dataset.path);
     });
+  });
+  list.querySelectorAll('.name[data-dir="false"]').forEach((el) => {
+    bindDragOut(el, `/api/sftp/${sftpConn.id}/download?path=${encodeURIComponent(el.dataset.path)}`, el.dataset.name);
   });
   list.querySelectorAll('[data-del]').forEach((el) => {
     el.addEventListener('click', () => removeSftp(el.dataset.del, el.dataset.dir === 'true'));
@@ -1306,7 +1390,7 @@ function renderDriveEntries(entries) {
   list.innerHTML = entries.map((e) => `
     <div class="sftp-row">
       <span>${e.dir ? '📁' : '📄'}</span>
-      <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}">${escapeHTML(e.name)}</span>
+      <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}" data-name="${escapeHTML(e.name)}">${escapeHTML(e.name)}</span>
       <span class="meta">${e.dir ? '-' : formatSize(e.size)}</span>
       <span class="meta">${(e.mod_time || '').replace('T', ' ').slice(0, 19)}</span>
       <span>${e.dir ? '' : `<a href="/api/rdp-drive/download?path=${encodeURIComponent(e.path)}" download>下载</a>`}</span>
@@ -1316,6 +1400,9 @@ function renderDriveEntries(entries) {
     el.addEventListener('click', () => {
       if (el.dataset.dir === 'true') loadDrive(el.dataset.path);
     });
+  });
+  list.querySelectorAll('.name[data-dir="false"]').forEach((el) => {
+    bindDragOut(el, `/api/rdp-drive/download?path=${encodeURIComponent(el.dataset.path)}`, el.dataset.name);
   });
 }
 
@@ -1330,6 +1417,200 @@ function saveBlob(blob, filename) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// ====== 拖出下载 & 同步到本地目录 ======
+let syncBusy = false;
+let syncCancelled = false;
+let syncAbort = null;
+
+function supportsDirectoryPicker() {
+  return typeof window.showDirectoryPicker === 'function';
+}
+
+// 文件行支持拖出：拖到 Finder / 资源管理器即落成文件（Chrome / Edge）
+function bindDragOut(el, url, name) {
+  el.setAttribute('draggable', 'true');
+  el.classList.add('drag-out');
+  el.title = '拖到桌面或本地文件夹即可下载';
+  el.addEventListener('dragstart', (e) => {
+    const safe = String(name || 'download').replace(/[\\/:*?"<>|\r\n]/g, '_');
+    const abs = new URL(url, location.href).href;
+    e.dataTransfer.setData('DownloadURL', `application/octet-stream:${safe}:${abs}`);
+    e.dataTransfer.effectAllowed = 'copy';
+  });
+}
+
+function sftpSource(connId) {
+  return {
+    list: (p) => fetchJSON(`/api/sftp/${connId}/list?path=${encodeURIComponent(p || '.')}`),
+    fileUrl: (p) => `/api/sftp/${connId}/download?path=${encodeURIComponent(p)}`,
+  };
+}
+
+function driveSource() {
+  return {
+    list: (p) => fetchJSON(`/api/rdp-drive/list?path=${encodeURIComponent(p || '')}`),
+    fileUrl: (p) => `/api/rdp-drive/download?path=${encodeURIComponent(p)}`,
+  };
+}
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function closeUploadPanel() {
+  document.getElementById('upload-panel').classList.add('hidden');
+  // 同步任务进行中关闭浮层即视为取消
+  if (syncBusy) {
+    syncCancelled = true;
+    if (syncAbort) syncAbort.abort();
+  }
+}
+
+// 递归收集远端目录下的文件与子目录（返回的文件顺序与目录顺序都是父在前）
+async function collectRemoteTree(source, remotePath, relBase, files, dirs) {
+  if (syncCancelled) return;
+  const data = await source.list(remotePath);
+  for (const e of data.entries || []) {
+    const rel = relBase ? `${relBase}/${e.name}` : e.name;
+    if (e.dir) {
+      dirs.push(rel);
+      await collectRemoteTree(source, e.path, rel, files, dirs);
+    } else {
+      files.push({ path: e.path, rel, size: e.size || 0 });
+    }
+  }
+}
+
+async function dirHandleAt(root, rel, create) {
+  let h = root;
+  for (const part of String(rel || '').split('/').filter(Boolean)) {
+    h = await h.getDirectoryHandle(part, { create });
+  }
+  return h;
+}
+
+async function fileHandleAt(root, rel) {
+  const parts = String(rel).split('/').filter(Boolean);
+  const name = parts.pop();
+  const dir = await dirHandleAt(root, parts.join('/'), true);
+  return dir.getFileHandle(name, { create: true });
+}
+
+function localRootName(p) {
+  const name = String(p || '')
+    .replace(/[\\/]+$/, '')
+    .split('/')
+    .filter((s) => s && s !== '.' && s !== '..')
+    .pop();
+  return (name || 'remote-files').replace(/[\\/:*?"<>|\r\n]/g, '_');
+}
+
+// syncToLocal 把远端目录递归写入用户选择的本地文件夹（File System Access API）
+async function syncToLocal(source, remotePath) {
+  if (!supportsDirectoryPicker()) {
+    alert('当前浏览器不支持「同步到本地目录」，请使用 Chrome 或 Edge（需 HTTPS 或 localhost 访问）。');
+    return;
+  }
+  if (syncBusy || uploading) {
+    alert('已有任务进行中，请稍候');
+    return;
+  }
+  let dest;
+  try {
+    dest = await window.showDirectoryPicker({ mode: 'readwrite', id: 'rcm-sync' });
+  } catch (e) {
+    return; // 用户取消选择
+  }
+
+  const ui = uploadPanel();
+  ui.panel.classList.remove('hidden');
+  ui.errors.innerHTML = '';
+  ui.fill.style.width = '0%';
+  ui.title.textContent = '同步到本地';
+  ui.status.textContent = '正在读取远端目录…';
+  syncBusy = true;
+  syncCancelled = false;
+  syncAbort = new AbortController();
+  let doneCount = 0;
+
+  try {
+    const files = [];
+    const dirs = [];
+    await collectRemoteTree(source, remotePath, '', files, dirs);
+    if (syncCancelled) return;
+
+    const rootName = localRootName(remotePath);
+    const root = await dest.getDirectoryHandle(rootName, { create: true });
+    ui.title.textContent = `同步 ${rootName} 到本地`;
+
+    for (const d of dirs) {
+      if (syncCancelled) return;
+      await dirHandleAt(root, d, true);
+    }
+
+    const totalBytes = files.reduce((n, f) => n + (f.size || 0), 0);
+    let doneBytes = 0;
+    const failed = [];
+
+    for (let i = 0; i < files.length; i++) {
+      if (syncCancelled) break;
+      const f = files[i];
+      ui.status.textContent = `同步中 ${i + 1}/${files.length}：${f.rel}`;
+      try {
+        const res = await fetch(source.fileUrl(f.path), { signal: syncAbort.signal });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || res.statusText);
+        }
+        const fh = await fileHandleAt(root, f.rel);
+        const w = await fh.createWritable();
+        if (res.body) {
+          await res.body.pipeTo(w);
+        } else {
+          await w.write(await res.blob());
+          await w.close();
+        }
+      } catch (err) {
+        if (syncCancelled) break;
+        failed.push(`${f.rel}：${err.message}`);
+        ui.errors.innerHTML = failed.map((m) => `<div>${escapeHTML(m)}</div>`).join('');
+      }
+      doneCount++;
+      doneBytes += f.size || 0;
+      const pct = totalBytes
+        ? (doneBytes / totalBytes) * 100
+        : ((i + 1) / files.length) * 100;
+      ui.fill.style.width = `${Math.min(100, Math.round(pct))}%`;
+    }
+
+    if (syncCancelled) {
+      ui.status.textContent = `已取消，完成 ${doneCount}/${files.length} 个文件`;
+      return;
+    }
+    ui.fill.style.width = '100%';
+    if (!files.length) {
+      ui.status.textContent = `远端目录为空，已创建本地文件夹「${rootName}」`;
+    } else {
+      ui.status.textContent = failed.length
+        ? `完成 ${doneCount - failed.length}/${files.length} 个文件，失败 ${failed.length} 个`
+        : `已同步 ${files.length} 个文件到本地「${rootName}」`;
+    }
+    if (!failed.length) {
+      setTimeout(() => {
+        if (!uploading && !syncBusy) ui.panel.classList.add('hidden');
+      }, 5000);
+    }
+  } catch (err) {
+    ui.status.textContent = '同步失败：' + err.message;
+  } finally {
+    syncBusy = false;
+    syncAbort = null;
+  }
 }
 
 // ====== SSH 端口转发 ======
@@ -1396,4 +1677,181 @@ async function deleteTunnel(id) {
   if (!confirm('关闭该隧道？')) return;
   await fetch(`/api/tunnels/${id}`, { method: 'DELETE' });
   loadTunnels();
+}
+
+// ====== 粘贴 / 拖拽上传（仅 SSH 会话）======
+let uploading = false;
+
+function hasFileDrag(e) {
+  const dt = e.dataTransfer;
+  if (!dt || !dt.types) return false;
+  return Array.from(dt.types).includes('Files');
+}
+
+function uploadPanel() {
+  return {
+    panel: document.getElementById('upload-panel'),
+    title: document.getElementById('upload-title'),
+    fill: document.getElementById('upload-bar-fill'),
+    status: document.getElementById('upload-status'),
+    errors: document.getElementById('upload-errors'),
+  };
+}
+
+function showUploadUnsupported() {
+  const ui = uploadPanel();
+  ui.panel.classList.remove('hidden');
+  ui.title.textContent = '不支持上传';
+  ui.fill.style.width = '0%';
+  ui.status.textContent = '仅 SSH 会话支持拖拽 / 粘贴上传文件';
+  ui.errors.innerHTML = '';
+}
+
+function onDragOver(e) {
+  if (!hasFileDrag(e)) return;
+  const sess = activeSession();
+  if (!sess || sess.conn.type !== 'ssh') return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  document.getElementById('session-viewer').classList.add('drop-active');
+  document.getElementById('drop-hint').classList.remove('hidden');
+}
+
+function onDragLeave(e) {
+  const viewer = document.getElementById('session-viewer');
+  if (e.relatedTarget && viewer.contains(e.relatedTarget)) return;
+  dragEnd();
+}
+
+function dragEnd() {
+  document.getElementById('session-viewer').classList.remove('drop-active');
+  document.getElementById('drop-hint').classList.add('hidden');
+}
+
+async function onDrop(e) {
+  if (!hasFileDrag(e)) return;
+  e.preventDefault();
+  dragEnd();
+  const sess = activeSession();
+  if (!sess) return;
+  if (sess.conn.type !== 'ssh') {
+    showUploadUnsupported();
+    return;
+  }
+  const items = await collectDropItems(e.dataTransfer);
+  if (items.length) uploadItemsToSession(sess, items);
+}
+
+// collectDropItems 优先用 webkitGetAsEntry 递归读取文件夹（必须在事件同步阶段取 entry）
+async function collectDropItems(dt) {
+  const out = [];
+  const entries = [];
+  if (dt.items) {
+    for (const it of Array.from(dt.items)) {
+      if (it.kind !== 'file') continue;
+      entries.push(it.webkitGetAsEntry ? it.webkitGetAsEntry() : null);
+    }
+  }
+  if (entries.some(Boolean)) {
+    for (const entry of entries) {
+      if (entry) await walkEntry(entry, '', out);
+    }
+  }
+  if (!out.length) {
+    for (const f of Array.from(dt.files || [])) out.push({ file: f, rel: f.name });
+  }
+  return out;
+}
+
+async function walkEntry(entry, base, out) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    out.push({ file, rel: base ? `${base}/${file.name}` : file.name });
+    return;
+  }
+  if (!entry.isDirectory) return;
+  const prefix = base ? `${base}/${entry.name}` : entry.name;
+  const reader = entry.createReader();
+  // readEntries 每次最多返回一批，需要循环读到空
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) break;
+    for (const child of batch) await walkEntry(child, prefix, out);
+  }
+}
+
+// resolveUploadDir 目标目录：文件面板当前目录优先，否则登录后的 home
+async function resolveUploadDir(conn) {
+  if (sftpConn && sftpConn.id === conn.id && sftpCurrent) return sftpCurrent;
+  const res = await fetch(`/api/sftp/${conn.id}/list?path=.`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data.path;
+}
+
+async function uploadItemsToSession(sess, items) {
+  const ui = uploadPanel();
+  ui.panel.classList.remove('hidden');
+  ui.errors.innerHTML = '';
+  ui.fill.style.width = '0%';
+  ui.title.textContent = '上传文件';
+
+  if (uploading) {
+    ui.status.textContent = '已有上传任务进行中，请稍候';
+    return;
+  }
+  uploading = true;
+
+  let dir = '';
+  try {
+    dir = await resolveUploadDir(sess.conn);
+  } catch (err) {
+    ui.status.textContent = '无法确定目标目录：' + err.message;
+    uploading = false;
+    return;
+  }
+  ui.title.textContent = `上传到 ${dir}`;
+  ui.status.textContent = '准备中…';
+
+  const total = items.length;
+  const failed = [];
+  let done = 0;
+
+  for (const it of items) {
+    ui.status.textContent = `上传中 ${done + 1}/${total}：${it.rel}`;
+    try {
+      const fd = new FormData();
+      fd.append('file', it.file, it.file.name);
+      fd.append('rel', it.rel);
+      fd.append('path', dir);
+      const res = await fetch(`/api/sftp/${sess.conn.id}/upload`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || res.statusText);
+      }
+    } catch (err) {
+      failed.push(`${it.rel}：${err.message}`);
+    }
+    done++;
+    ui.fill.style.width = `${Math.round((done / total) * 100)}%`;
+    if (failed.length) {
+      ui.errors.innerHTML = failed.map((m) => `<div>${escapeHTML(m)}</div>`).join('');
+    }
+  }
+
+  ui.status.textContent = failed.length
+    ? `完成 ${total - failed.length}/${total}，失败 ${failed.length} 个`
+    : `完成 ${total}/${total} 个文件`;
+  uploading = false;
+
+  // 文件面板正开着就刷新到目标目录，便于确认结果
+  if (sftpConn && sftpConn.id === sess.conn.id) {
+    sftpCurrent = dir;
+    loadSftp(dir);
+  }
+  if (!failed.length) {
+    setTimeout(() => {
+      if (!uploading && !syncBusy) ui.panel.classList.add('hidden');
+    }, 5000);
+  }
 }

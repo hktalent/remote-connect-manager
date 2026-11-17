@@ -28,6 +28,7 @@
 - 交互式终端（xterm.js + PTY），窗口大小变化会把 `cols/rows` 同步给远端，`vim`、`htop`、`tmux` 都能正常使用。
 - **终端自适应**：用 `ResizeObserver` 监听会话容器，浏览器窗口缩放、全屏切换、布局变化时自动重排并同步 PTY 行列数，不会出现内容溢出或留白。
 - **系统剪贴板粘贴**：在会话里直接按 `Cmd+V`（macOS）/ `Ctrl+V`（Windows、Linux）即可粘贴，无需右键菜单；终端用 bracketed paste，`vim` 等全屏程序也不会错位。
+- **终端复制**：用鼠标选中文本后按 `Cmd+C`（macOS）/ `Ctrl+Shift+C`（Windows、Linux）即可写入系统剪贴板；`Ctrl+C` 仍保留为发送 SIGINT。canvas 渲染的选区不是 DOM 选区，浏览器原生复制无法直接取到，所以由前端接管。VNC / RDP / Telnet 没有可选中的文本层，需要在远端桌面里复制，文本经剪贴板通道自动写回本地。
 
 ### SFTP 文件管理与端口转发
 
@@ -35,6 +36,14 @@
 - **SSH 端口转发**：SSH 会话工具栏点「⇄」，填目标主机（默认 `127.0.0.1`）和目标端口，即可创建一条本地转发；界面显示 `localhost:<本地端口>` 访问地址，支持随时删除。
 - 转发端口取自 `TUNNEL_PORT_BASE`~`TUNNEL_PORT_MAX`（默认 20000-20010），Docker 已把该区间映射到宿主机，因此在宿主机用 `localhost:20000` 即可访问远端内网服务（MySQL、Redis、内部 Web 等）。
 - 隧道随进程生命周期存在，重启应用后需重新创建；连接断开时会自动释放端口。
+- **粘贴 / 拖拽上传（仅 SSH）**：把文件或文件夹从 Finder / 资源管理器拖进 SSH 会话窗口，或复制后在会话里按 `Cmd+V` / `Ctrl+V`，文件会直接落到远端当前目录，右下角浮层显示逐个上传的进度、成功数与失败原因。
+  - 目标目录：文件面板（「🗂」）打开时用它的当前目录，否则用该账号的 home（`pwd` 语义，即 SFTP 的初始目录）。
+  - 文件夹会递归上传并自动创建子目录；同名文件直接覆盖。
+  - 粘贴优先判断剪贴板里是否有文件，有文件就上传、不当作文本粘贴；拖拽遮罩只在真正携带文件时出现。
+  - 浏览器兼容性：拖拽在 Chrome / Edge / Safari 上支持文件与文件夹；Firefox 能拖文件但不支持文件夹（`webkitGetAsEntry` 缺失）；Chrome 对「Finder 里直接复制文件再粘贴」支持不稳定，推荐用拖拽。
+  - VNC / RDP / Telnet 没有文件通道，在会话里粘贴文件会提示改用 SSH 或共享盘。
+- **拖出下载**：文件面板里的文件名可直接拖到桌面或 Finder / 资源管理器中的文件夹，松手即落成文件。依赖浏览器的 `DownloadURL`，Chrome / Edge 支持，Safari / Firefox 不支持。
+- **同步到本地目录**：点「同步到本地」，选一个本地文件夹，当前远端目录会递归写入其下的同名子目录（保留目录层级与空目录），右下角浮层显示进度与失败项，关闭浮层即取消。基于 File System Access API，仅 Chrome / Edge 可用（需 HTTPS 或 localhost），目录只写一次、不建立持续同步关系。
 
 ### 密钥管理
 
@@ -51,7 +60,7 @@
 - **RDP 画质可调**：连接配置里的「画质」对应 RDP 色深，可选 24 位（高清）、16 位（推荐，省带宽）、8 位（极速）。分辨率不变，只降低颜色精度，带宽和卡顿随之下降；改完需重连生效。
 - **优先有损编码**：握手时按 `image/webp → image/jpeg → image/png` 声明支持的格式，避免大块画面走 PNG 无损编码；同时设置 `force-lossless=false`。
 - **RDP 文件传输**：开启共享盘（`drive-name=rcm`），会话工具栏出现「⇪」上传按钮，选中的文件会出现在远端的共享盘中——Windows 为 `\\tsclient\rcm`，xrdp 为 `~/thinclient_drives/rcm`。
-- **共享盘下载**：RDP 会话工具栏点「🖴」打开「共享盘」面板，可浏览目录、下载文件（支持断点续传）。共享盘落地在 guacd 的 `drive-path`（默认 `/tmp/rcm-drive`），Docker 部署时与主程序共用宿主机 `./data/rdp-drive`；远端往共享盘写入文件后，点「刷新」即可看到并下载。guacd 若下发 Guacamole `file` / `filesystem` 推送指令，浏览器也会自动弹出下载（`onfile`、`onfilesystem` 均已接）。
+- **共享盘下载**：RDP 会话工具栏点「🖴」打开「共享盘」面板，可浏览目录、下载文件（支持断点续传），文件也能直接拖到桌面或本地文件夹，或用「同步到本地」把当前目录整个写入本地文件夹。共享盘落地在 guacd 的 `drive-path`（默认 `/tmp/rcm-drive`），Docker 部署时与主程序共用宿主机 `./data/rdp-drive`；远端往共享盘写入文件后，点「刷新」即可看到并下载。guacd 若下发 Guacamole `file` / `filesystem` 推送指令，浏览器也会自动弹出下载（`onfile`、`onfilesystem` 均已接）。
 - **双向剪贴板**：本地按 `Cmd+V` / `Ctrl+V` 通过 Guacamole clipboard 流把文本送入远端；远端复制的文本也会写回本地系统剪贴板（非 HTTPS 环境自动降级为 `execCommand`）。
 - **声音**：握手声明 `audio/L16`、`audio/L8`，RDP 会话的声音在浏览器里直接播放（需先点击过会话画面，满足浏览器的自动播放策略）。
 - **Telnet**：新增连接类型，默认端口 23，复用同一套 guacd 通道；配色、字号、`xterm-256color` 终端类型均已调好。Telnet 是明文协议，只建议在内网或隧道内使用。
@@ -350,7 +359,7 @@ data/
 | GET | `/api/readme` | 项目 README（「关于」弹窗渲染用） |
 | GET | `/api/sftp/:id/list?path=` | 列出远端目录 |
 | GET | `/api/sftp/:id/download?path=` | 下载远端文件 |
-| POST | `/api/sftp/:id/upload` | 上传文件（multipart：`file` + `path`） |
+| POST | `/api/sftp/:id/upload` | 上传文件（multipart：`file` + `path`，可选 `rel` 为相对 `path` 的目标路径，用于文件夹上传，父目录自动创建） |
 | POST | `/api/sftp/:id/mkdir`、`/api/sftp/:id/remove` | 新建目录 / 删除文件或目录 |
 | GET/POST | `/api/tunnels` | 隧道列表 / 新建（`connection_id`、`remote_host`、`remote_port`） |
 | DELETE | `/api/tunnels/:id` | 关闭隧道 |
@@ -375,6 +384,8 @@ data/
 **隧道端口访问不到**：确认宿主机端口已映射（`docker port remote-connect-manager` 应包含 20000-20010），并检查目标端口在远端是否监听（如 `ss -lntp`）；隧道只转发 TCP。
 
 **SFTP 面板打不开或报权限错误**：SFTP 用的是连接配置里的同一账号与密钥；确认该账号有目标目录权限，且远端 sshd 未禁用 sftp 子系统（`Subsystem sftp ...`）。
+
+**「同步到本地」没反应 / 文件拖不出去**：两者依赖 Chromium 专有 API（File System Access、`DownloadURL`），Firefox 与 Safari 不支持，且页面必须通过 HTTPS 或 localhost 打开。拖出一次只能带一个文件，文件夹请用「同步到本地」。
 
 **按 `Cmd+V` 粘贴没反应**：确认焦点在会话窗口内（点一下终端画面），且浏览器加载的是带版本号的最新前端；若仍无反应，强制刷新（`Cmd+Shift+R`）清掉旧缓存。配置弹窗里的输入框仍使用浏览器默认粘贴。
 
