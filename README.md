@@ -26,6 +26,8 @@
 - 支持密钥登录与密码登录；密钥登录时可选择密钥库中的任意私钥。
 - 自动扫描 `~/.ssh`：`id_rsa`、`id_rsa.pub`、`authorized_keys` 等文件在启动时自动导入密钥库，同名同内容跳过，同名不同内容自动加哈希后缀，避免覆盖。
 - 交互式终端（xterm.js + PTY），窗口大小变化会把 `cols/rows` 同步给远端，`vim`、`htop`、`tmux` 都能正常使用。
+- **终端自适应**：用 `ResizeObserver` 监听会话容器，浏览器窗口缩放、全屏切换、布局变化时自动重排并同步 PTY 行列数，不会出现内容溢出或留白。
+- **系统剪贴板粘贴**：在会话里直接按 `Cmd+V`（macOS）/ `Ctrl+V`（Windows、Linux）即可粘贴，无需右键菜单；终端用 bracketed paste，`vim` 等全屏程序也不会错位。
 
 ### 密钥管理
 
@@ -38,6 +40,9 @@
 
 - VNC 走 WebSocket 裸转发到 noVNC 客户端；服务器需要密码时自动使用配置里保存的密码。
 - RDP 由后端完成 Guacamole 握手（`select → args → size/image/video/audio/timezone → connect → ready`），前端只负责渲染与输入，`guacd` 由 compose 里的独立服务提供。
+- **画质可调**：连接配置里的「画质」对应 RDP 色深，可选 24 位（高清）、16 位（推荐，省带宽）、8 位（极速）。分辨率不变，只降低颜色精度，带宽和卡顿随之下降；改完需重连生效。
+- **优先有损编码**：握手时按 `image/webp → image/jpeg → image/png` 声明支持的格式，避免大块画面走 PNG 无损编码；同时设置 `force-lossless=false`。
+- 三种会话都支持 `Cmd+V` / `Ctrl+V`：VNC 把文本送入远端剪贴板，RDP 通过 Guacamole clipboard 流传输，在远端桌面内再粘贴即可。
 
 ### 会话窗口
 
@@ -293,7 +298,8 @@ data/
 | `auth_type` | `key` 或 `password`（SSH 生效） |
 | `key_name` | 引用 `data/keys/` 下的密钥名；私钥带口令时口令填在 `password` |
 | `password` | VNC / RDP 密码，或 SSH 密钥口令 |
-| `width` / `height` / `color_depth` / `security` | RDP / VNC 画面参数，缺省由服务端决定 |
+| `width` / `height` / `security` | RDP / VNC 画面参数，缺省由服务端决定（1280×720、`any`） |
+| `color_depth` | RDP 色深：`24`（默认）/ `16`（推荐，省带宽）/ `8`（极速），分辨率不变只降颜色精度 |
 | `screenshot` | 卡片背景图地址，由程序自动写入，不要手填 |
 
 > `data/connections.db` 里可能含明文密码，请当作敏感文件保护（Docker 部署时它落在宿主机 `./data`）。
@@ -328,6 +334,10 @@ data/
 ## 常见问题
 
 **RDP 连不上 / 报 guacd 相关错误**：确认 `rcm-guacd` 容器在运行（`docker ps`），且 `GUACD_ADDR` 指向正确；非 Docker 部署需自行启动 `guacd`。
+
+**RDP 卡顿 / 画面延迟**：编辑该连接，把「画质」调成 16 位或 8 位（分辨率不变），保存后**重连**生效；如果仍然卡，再考虑降低 `width`/`height` 或改善链路。默认已优先使用 WebP/JPEG 有损编码。
+
+**按 `Cmd+V` 粘贴没反应**：确认焦点在会话窗口内（点一下终端画面），且浏览器加载的是带版本号的最新前端；若仍无反应，强制刷新（`Cmd+Shift+R`）清掉旧缓存。配置弹窗里的输入框仍使用浏览器默认粘贴。
 
 **列表里没有我的密钥**：确认 `~/.ssh` 已只读挂载进容器，或在「密钥管理」里点「扫描 ~/.ssh」；加密私钥也能导入，但连接时需填口令。
 
