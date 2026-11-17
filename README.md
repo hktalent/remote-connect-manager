@@ -1,6 +1,6 @@
 # 远程连接管理器（Remote Connect Manager）
 
-一个自托管的 Web 控制台，把分散的 SSH / VNC / RDP 目标集中登记成卡片，点击卡片即可直接在浏览器里操作远程会话；每个卡片用该连接最后一次的界面截图作为背景，一眼就能看出每台机器当前的状态。
+一个自托管的 Web 控制台，把分散的 SSH / VNC / RDP / Telnet 目标集中登记成卡片，点击卡片即可直接在浏览器里操作远程会话；每个卡片用该连接最后一次的界面截图作为背景，一眼就能看出每台机器当前的状态。
 
 ![演示](img/demo.jpg)
 
@@ -8,7 +8,7 @@
 
 日常要维护多台 Kali / Linux / Windows 主机时，配置散落在各个客户端里，每次都要重新翻 IP、端口、密钥。这个项目把「配置登记 + 一键连接 + 界面留影」做成一个页面：
 
-- 后端 Go（Gin + gorilla/websocket），用 `golang.org/x/crypto/ssh` 直连 SSH，用 noVNC 协议代理 VNC，用 Guacamole 协议经 `guacd` 连接 RDP。
+- 后端 Go（Gin + gorilla/websocket），用 `golang.org/x/crypto/ssh` 直连 SSH，用 noVNC 协议代理 VNC，用 Guacamole 协议经 `guacd` 连接 RDP 与 Telnet。
 - 前端纯静态（xterm.js / noVNC / guacamole-common-js），全部依赖本地化到 `web/vendor/`，通过 `embed.FS` 打进二进制，离线可用。
 - 配置与密钥以 JSON 形式落盘到 `data/`，截图存 `data/screenshots/`，直接挂载卷即可迁移备份。
 
@@ -16,7 +16,7 @@
 
 ### 连接管理
 
-- SSH / VNC / RDP 三种类型统一登记：名称、主机、端口、用户名、分辨率、认证方式。
+- SSH / VNC / RDP / Telnet 四种类型统一登记：名称、主机、端口、用户名、分辨率、认证方式。
 - 卡片网格展示；有截图时用最后界面图作背景，没有截图时显示类型图标。
 - 卡片右上角提供「编辑配置」「删除」；点击卡片打开会话窗口。
 - 会话中的连接卡片会高亮并标注「运行中」，用来区分正在使用的连接。
@@ -36,13 +36,17 @@
 - 密钥可编辑：改名称、改私钥正文、改公钥；改名会同步更新所有引用该密钥的连接配置，改正文会校验是否是合法私钥。
 - 识别加密私钥（带 passphrase）：列表标记「（加密）」，连接时在密码栏填入口令即可。
 
-### VNC / RDP
+### VNC / RDP / Telnet
 
 - VNC 走 WebSocket 裸转发到 noVNC 客户端；服务器需要密码时自动使用配置里保存的密码。
-- RDP 由后端完成 Guacamole 握手（`select → args → size/image/video/audio/timezone → connect → ready`），前端只负责渲染与输入，`guacd` 由 compose 里的独立服务提供。
-- **画质可调**：连接配置里的「画质」对应 RDP 色深，可选 24 位（高清）、16 位（推荐，省带宽）、8 位（极速）。分辨率不变，只降低颜色精度，带宽和卡顿随之下降；改完需重连生效。
+- **VNC 画质调节**：连接配置里的「画质」提供 高清 / 均衡 / 流畅 三档，分别映射 noVNC 的 `qualityLevel` 与 `compressionLevel`（9/3、6/6、3/9），画面不缩放，只调整颜色精度与压缩强度，卡顿时选「流畅」。
+- RDP / Telnet 由后端完成 Guacamole 握手（`select → args → size/image/video/audio/timezone → connect → ready`），前端只负责渲染与输入，`guacd` 由 compose 里的独立服务提供。
+- **RDP 画质可调**：连接配置里的「画质」对应 RDP 色深，可选 24 位（高清）、16 位（推荐，省带宽）、8 位（极速）。分辨率不变，只降低颜色精度，带宽和卡顿随之下降；改完需重连生效。
 - **优先有损编码**：握手时按 `image/webp → image/jpeg → image/png` 声明支持的格式，避免大块画面走 PNG 无损编码；同时设置 `force-lossless=false`。
-- 三种会话都支持 `Cmd+V` / `Ctrl+V`：VNC 把文本送入远端剪贴板，RDP 通过 Guacamole clipboard 流传输，在远端桌面内再粘贴即可。
+- **RDP 文件传输**：开启共享盘（`drive-name=rcm`），会话工具栏出现「⇪」上传按钮，选中的文件会出现在远端的共享盘中——Windows 为 `\\tsclient\rcm`，xrdp 为 `~/thinclient_drives/rcm`。
+- **双向剪贴板**：本地按 `Cmd+V` / `Ctrl+V` 通过 Guacamole clipboard 流把文本送入远端；远端复制的文本也会写回本地系统剪贴板（非 HTTPS 环境自动降级为 `execCommand`）。
+- **声音**：握手声明 `audio/L16`、`audio/L8`，RDP 会话的声音在浏览器里直接播放（需先点击过会话画面，满足浏览器的自动播放策略）。
+- **Telnet**：新增连接类型，默认端口 23，复用同一套 guacd 通道；配色、字号、`xterm-256color` 终端类型均已调好。Telnet 是明文协议，只建议在内网或隧道内使用。
 
 ### 会话窗口
 
@@ -72,6 +76,7 @@
 | SSH | `golang.org/x/crypto/ssh`（密钥/密码认证、PTY、WindowChange） |
 | VNC | WebSocket ↔ TCP 裸转发 + noVNC 1.4 |
 | RDP | Guacamole 协议隧道 + `guacd` 1.5.5 |
+| Telnet | Guacamole 协议隧道 + `guacd` 1.5.5（终端渲染） |
 | 前端 | 原生 JS、xterm.js 5.3（含 canvas 渲染器用于截图）、noVNC、guacamole-common-js |
 | 存储 | JSON 文件（`data/connections.db`）+ 截图文件（`data/screenshots/`） |
 | 部署 | Docker 多阶段构建 + docker compose |
@@ -86,7 +91,7 @@ remote-connect-manager/
 │   ├── keys/                   # 密钥库：扫描、生成、导入、编辑、加载签名器
 │   ├── ssh/                    # SSH WebSocket + PTY 透传
 │   ├── vnc/                    # VNC WebSocket 裸转发
-│   ├── rdp/                    # RDP：guacd 握手与双向透传
+│   ├── rdp/                    # RDP / Telnet：guacd 握手与双向透传
 │   └── screenshot/             # 截图落盘与旧图清理
 ├── web/
 │   ├── index.html              # 页面结构
@@ -168,7 +173,7 @@ docker compose up -d --build
 compose 会拉起两个容器：
 
 - `remote-connect-manager`：主服务，宿主机 `8088` → 容器 `8080`。
-- `rcm-guacd`：`guacamole/guacd:1.5.5`，供 RDP 使用。
+- `rcm-guacd`：`guacamole/guacd:1.5.5`，供 RDP / Telnet 使用。
 
 默认挂载与参数（见 [docker-compose.yml](docker-compose.yml)）：
 
@@ -177,7 +182,7 @@ compose 会拉起两个容器：
 | `./data:/app/data` | 配置、密钥、截图持久化到宿主机 |
 | `${HOME}/.ssh:/host-ssh:ro` | 只读挂载宿主机 SSH 目录，启动时自动导入私钥 |
 | `PORT=8080` | 容器内监听端口 |
-| `GUACD_ADDR=guacd:4822` | RDP 使用的 guacd 地址 |
+| `GUACD_ADDR=guacd:4822` | RDP / Telnet 使用的 guacd 地址 |
 | `host.docker.internal:host-gateway` | 让容器能访问宿主机上的虚拟机 / 端口转发 |
 
 改端口只需改 compose 里的 `"8088:8080"` 左侧，例如 `"9090:8080"`。
@@ -224,8 +229,8 @@ GUACD_ADDR=127.0.0.1:4822 ./remote-connect-manager
 
 ### 3. 配置一条连接
 
-1. 点右上角「+ 新建连接」，选择类型（SSH / VNC / RDP），填主机、端口、用户名。
-2. SSH 选「密钥」认证并挑一把密钥；私钥带口令的话在密码栏填口令。VNC / RDP 直接填密码。
+1. 点右上角「+ 新建连接」，选择类型（SSH / VNC / RDP / Telnet），填主机、端口、用户名。
+2. SSH 选「密钥」认证并挑一把密钥；私钥带口令的话在密码栏填口令。VNC / RDP / Telnet 直接填密码。
 3. 保存后点击卡片即可连接。终端里正常操作，窗口大小变化会同步到远端。
 4. 想切回卡片视图点 `↘`（会话不中断），想结束会话点 `✕`（关闭后卡片背景自动更新为该会话最后一屏）。
 
@@ -292,14 +297,15 @@ data/
 | --- | --- |
 | `id` | UUID，新建时自动生成 |
 | `name` | 卡片显示名 |
-| `type` | `ssh` / `vnc` / `rdp` |
-| `host` / `port` | 目标地址；RDP 默认 3389，VNC 5900，SSH 22 |
+| `type` | `ssh` / `vnc` / `rdp` / `telnet` |
+| `host` / `port` | 目标地址；RDP 默认 3389，VNC 5900，SSH 22，Telnet 23 |
 | `username` | 登录用户（VNC 可留空） |
 | `auth_type` | `key` 或 `password`（SSH 生效） |
 | `key_name` | 引用 `data/keys/` 下的密钥名；私钥带口令时口令填在 `password` |
-| `password` | VNC / RDP 密码，或 SSH 密钥口令 |
+| `password` | VNC / RDP / Telnet 密码，或 SSH 密钥口令 |
 | `width` / `height` / `security` | RDP / VNC 画面参数，缺省由服务端决定（1280×720、`any`） |
 | `color_depth` | RDP 色深：`24`（默认）/ `16`（推荐，省带宽）/ `8`（极速），分辨率不变只降颜色精度 |
+| `vnc_quality` | VNC 画质：`high` / `medium`（默认）/ `low`，映射 noVNC 的 `qualityLevel` 与 `compressionLevel` |
 | `screenshot` | 卡片背景图地址，由程序自动写入，不要手填 |
 
 > `data/connections.db` 里可能含明文密码，请当作敏感文件保护（Docker 部署时它落在宿主机 `./data`）。
@@ -329,13 +335,22 @@ data/
 | GET | `/api/keys`、`/api/keys/:name`、`/api/keys/:name/public` | 密钥列表 / 私钥详情 / 公钥 |
 | POST | `/api/keys/generate`、`/api/keys/import`、`/api/keys/scan` | 生成 / 导入 / 扫描密钥 |
 | PUT/DELETE | `/api/keys/:name` | 编辑（含改名）/ 删除密钥 |
-| WS | `/ws/ssh/:id`、`/ws/vnc/:id`、`/ws/guacamole/:id` | SSH / VNC / RDP 会话通道 |
+| GET | `/api/readme` | 项目 README（「关于」弹窗渲染用） |
+| WS | `/ws/ssh/:id`、`/ws/vnc/:id`、`/ws/guacamole/:id`、`/ws/telnet/:id` | SSH / VNC / RDP / Telnet 会话通道 |
 
 ## 常见问题
 
 **RDP 连不上 / 报 guacd 相关错误**：确认 `rcm-guacd` 容器在运行（`docker ps`），且 `GUACD_ADDR` 指向正确；非 Docker 部署需自行启动 `guacd`。
 
 **RDP 卡顿 / 画面延迟**：编辑该连接，把「画质」调成 16 位或 8 位（分辨率不变），保存后**重连**生效；如果仍然卡，再考虑降低 `width`/`height` 或改善链路。默认已优先使用 WebP/JPEG 有损编码。
+
+**VNC 卡顿**：编辑该连接，把「画质」调成「流畅」（颜色精度下降、压缩加强），重连生效。
+
+**RDP 上传的文件在哪**：点会话工具栏的「⇪」选择文件，文件进入远端共享盘 `rcm`——Windows 在 `\\tsclient\rcm`，xrdp 在 `~/thinclient_drives/rcm`。
+
+**远端复制的文本没进本地剪贴板**：HTTPS 下用 `navigator.clipboard`，HTTP 下自动降级为 `execCommand('copy')`；部分浏览器会拦截后台写入，点一下页面再复制一次即可。
+
+**Telnet 安全性**：Telnet 无加密，账号密码明文传输，只建议在可信内网或 SSH 隧道内使用。
 
 **按 `Cmd+V` 粘贴没反应**：确认焦点在会话窗口内（点一下终端画面），且浏览器加载的是带版本号的最新前端；若仍无反应，强制刷新（`Cmd+Shift+R`）清掉旧缓存。配置弹窗里的输入框仍使用浏览器默认粘贴。
 

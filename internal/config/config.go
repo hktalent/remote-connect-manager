@@ -16,7 +16,7 @@ import (
 type Connection struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
-	Type        string    `json:"type"` // ssh, vnc, rdp
+	Type        string    `json:"type"` // ssh, vnc, rdp, telnet
 	Host        string    `json:"host"`
 	Port        int       `json:"port"`
 	Username    string    `json:"username"`
@@ -29,6 +29,7 @@ type Connection struct {
 	Height      int       `json:"height"`
 	Screenshot  string    `json:"screenshot,omitempty"`
 	ColorDepth  int       `json:"color_depth,omitempty"`
+	VNCQuality  string    `json:"vnc_quality,omitempty"` // high, medium, low
 	Security    string    `json:"security,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -137,6 +138,8 @@ func CreateConnection(c *gin.Context) {
 			conn.Port = 5900
 		case "rdp":
 			conn.Port = 3389
+		case "telnet":
+			conn.Port = 23
 		}
 	}
 	conns, err := loadAll()

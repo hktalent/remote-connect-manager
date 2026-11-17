@@ -72,6 +72,7 @@ func main() {
 	r.GET("/ws/ssh/:id", ssh.HandleSSH)
 	r.GET("/ws/vnc/:id", vnc.HandleVNC)
 	r.GET("/ws/rdp/:id", rdp.HandleRDP)
+	r.GET("/ws/telnet/:id", rdp.HandleGuacamoleTunnel)
 	r.GET("/ws/guacamole/:id", rdp.HandleGuacamoleTunnel)
 
 	// Screenshot files

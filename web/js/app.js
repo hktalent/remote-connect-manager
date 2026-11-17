@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-zoom-reset').addEventListener('click', () => setZoom(1));
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
   document.getElementById('btn-about').addEventListener('click', openAboutModal);
+  document.getElementById('btn-upload').addEventListener('click', pickFileForUpload);
   // 系统剪贴板粘贴（Cmd+V / Ctrl+V）直接转发到当前会话
   document.addEventListener('paste', pasteToSession, true);
 });
@@ -132,6 +133,7 @@ async function openConfigModal(id) {
       form.width.value = conn.width || 1280;
       form.height.value = conn.height || 720;
       form.color_depth.value = conn.color_depth || 24;
+      form.vnc_quality.value = conn.vnc_quality || 'medium';
     }
   } else {
     form.id.value = '';
@@ -152,17 +154,18 @@ function closeModal() {
 
 function onTypeChange() {
   const type = document.getElementById('conn-type').value;
-  const portMap = { ssh: 22, vnc: 5900, rdp: 3389 };
+  const portMap = { ssh: 22, vnc: 5900, rdp: 3389, telnet: 23 };
   const portInput = document.querySelector('input[name="port"]');
-  if (!portInput.value || [22, 5900, 3389].includes(parseInt(portInput.value))) {
+  if (!portInput.value || [22, 5900, 3389, 23].includes(parseInt(portInput.value))) {
     portInput.value = portMap[type];
   }
-  // SSH 用密钥/密码二选一；VNC/RDP 只需要密码
+  // SSH 用密钥/密码二选一；VNC/RDP/Telnet 只需要密码
   const authSection = document.getElementById('auth-section');
   authSection.style.display = '';
   document.getElementById('auth-type').parentElement.classList.toggle('hidden', type !== 'ssh');
-  // 画质（色深）只对 RDP 生效
+  // RDP 用色深、VNC 用画质预设
   document.getElementById('quality-row').classList.toggle('hidden', type !== 'rdp');
+  document.getElementById('vnc-quality-row').classList.toggle('hidden', type !== 'vnc');
   if (type === 'ssh') {
     onAuthChange();
   } else {
@@ -231,6 +234,7 @@ async function onSaveConfig(e) {
     width: parseInt(form.width.value),
     height: parseInt(form.height.value),
     color_depth: parseInt(form.color_depth.value) || 24,
+    vnc_quality: form.vnc_quality.value || 'medium',
   };
   const id = form.id.value;
   const url = id ? `/api/connections/${id}` : '/api/connections';
@@ -394,6 +398,8 @@ function sessionPool() {
 function showViewer(sess) {
   document.getElementById('session-title').textContent =
     `${sess.conn.name} (${sess.conn.type.toUpperCase()})`;
+  // 文件上传只对 RDP（共享盘）提供
+  document.getElementById('btn-upload').classList.toggle('hidden', sess.conn.type !== 'rdp');
   document.getElementById('session-viewer').classList.remove('hidden');
 }
 
@@ -425,7 +431,7 @@ async function openSession(conn) {
   let sess = null;
   if (conn.type === 'ssh') sess = startSSHSession(conn, stage);
   else if (conn.type === 'vnc') sess = startVNCSession(conn, stage);
-  else if (conn.type === 'rdp') sess = startRDPSession(conn, stage);
+  else if (conn.type === 'rdp' || conn.type === 'telnet') sess = startGuacSession(conn, stage);
   if (!sess) {
     body.innerHTML = '';
     return;
@@ -628,6 +634,13 @@ function startVNCSession(conn, stage) {
   const rfb = new window.RFB(div, url);
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
+  // 画质预设：qualityLevel 越高越清晰，compressionLevel 越高越省带宽
+  const presets = { high: [9, 3], medium: [6, 6], low: [3, 9] };
+  const [ql, cl] = presets[conn.vnc_quality] || presets.medium;
+  try {
+    rfb.qualityLevel = ql;
+    rfb.compressionLevel = cl;
+  } catch (e) {}
 
   const sess = {
     conn, stage, element: div, zoom: 1, timer: null, closed: false,
@@ -653,20 +666,22 @@ function startVNCSession(conn, stage) {
   return sess;
 }
 
-// ====== RDP (Guacamole) ======
-function startRDPSession(conn, stage) {
+// ====== RDP / Telnet（Guacamole） ======
+function startGuacSession(conn, stage) {
   if (!window.Guacamole) {
     alert('Guacamole 库尚未加载完成，请稍后重试');
     return null;
   }
+  const isTelnet = conn.type === 'telnet';
   const div = document.createElement('div');
-  div.id = 'rdp-container';
+  div.id = 'guac-container';
   div.style.width = '100%';
   div.style.height = '100%';
   stage.appendChild(div);
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const tunnel = new Guacamole.WebSocketTunnel(`${proto}://${location.host}/ws/guacamole/${conn.id}`);
+  const path = isTelnet ? 'telnet' : 'guacamole';
+  const tunnel = new Guacamole.WebSocketTunnel(`${proto}://${location.host}/ws/${path}/${conn.id}`);
   const client = new Guacamole.Client(tunnel);
 
   div.appendChild(client.getDisplay().getElement());
@@ -685,10 +700,24 @@ function startRDPSession(conn, stage) {
         writer.sendEnd();
       } catch (e) {}
     },
+    // RDP 共享盘上传：远端 Windows 在 \\tsclient\rcm，xrdp 在 ~/thinclient_drives/rcm
+    upload: isTelnet ? null : (file) => uploadToDrive(client, file),
     close: () => {
       sess.closed = true;
       try { client.disconnect(); } catch (e) {}
     },
+  };
+
+  // 远端剪贴板 → 本地系统剪贴板
+  client.onclipboard = (stream, mimetype) => {
+    if (mimetype !== 'text/plain') {
+      try { stream.sendAck('Unsupported', 0x0100); } catch (e) {}
+      return;
+    }
+    const reader = new Guacamole.StringReader(stream);
+    let text = '';
+    reader.ontext = (chunk) => { text += chunk; };
+    reader.onend = () => { if (text) writeLocalClipboard(text); };
   };
 
   // 握手由后端完成，这里不需要传连接参数
@@ -706,13 +735,54 @@ function startRDPSession(conn, stage) {
   mouse.onmousemove = (state) => client.sendMouseState(state);
 
   client.onerror = (status) => {
-    console.error('RDP 错误', status);
+    console.error('Guacamole 错误', status);
   };
   client.onend = () => {
     if (!sess.closed) refreshCardBackground(sess);
   };
 
   return sess;
+}
+
+function pickFileForUpload() {
+  const sess = activeSession();
+  if (!sess || typeof sess.upload !== 'function') return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.onchange = () => {
+    if (input.files && input.files[0]) sess.upload(input.files[0]);
+  };
+  input.click();
+}
+
+function uploadToDrive(client, file) {
+  try {
+    const name = file.name.replace(/[\\/]/g, '_');
+    const stream = client.createFileStream(file.type || 'application/octet-stream', `rcm\\${name}`);
+    const writer = new Guacamole.BlobWriter(stream);
+    writer.sendBlob(file);
+  } catch (e) {
+    console.error('上传失败', e);
+  }
+}
+
+function writeLocalClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopyText(text));
+  } else {
+    fallbackCopyText(text);
+  }
+}
+
+function fallbackCopyText(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  ta.remove();
 }
 
 // ====== Screenshot ======

@@ -97,7 +97,8 @@ func HandleGuacamoleTunnel(c *gin.Context) {
 	// PNG 放前面会导致大块画面走无损编码，带宽高、易卡顿
 	sb.WriteString(guacEncode([]string{"image", "image/webp", "image/jpeg", "image/png"}))
 	sb.WriteString(guacEncode([]string{"video"}))
-	sb.WriteString(guacEncode([]string{"audio"}))
+	// 声明支持的音频编码，RDP/VNC 启用了声音后 guacd 会推 audio 流
+	sb.WriteString(guacEncode([]string{"audio", "audio/L16", "audio/L8"}))
 	sb.WriteString(guacEncode([]string{"timezone", "Asia/Shanghai"}))
 
 	// 4) connect：值顺序必须与 args 中参数顺序一致
@@ -262,8 +263,11 @@ func argValue(name string, conn *config.Connection) string {
 		if conn.Port > 0 {
 			return strconv.Itoa(conn.Port)
 		}
-		if conn.Type == "vnc" {
+		switch conn.Type {
+		case "vnc":
 			return "5900"
+		case "telnet":
+			return "23"
 		}
 		return "3389"
 	case "username":
@@ -300,8 +304,36 @@ func argValue(name string, conn *config.Connection) string {
 		return "true"
 	case "disable-auth":
 		return "false"
-	case "enable-drive", "enable-sftp", "disable-copy", "disable-paste", "console", "read-only":
+	case "enable-drive":
+		// RDP 共享盘：Windows 映射为 \\tsclient\rcm，xrdp 挂到 ~/thinclient_drives/rcm
+		return "true"
+	case "drive-name":
+		return "rcm"
+	case "create-drive-path":
 		return "false"
+	case "disable-audio", "disable-audio-input":
+		return "false"
+	case "enable-sftp", "console", "read-only":
+		return "false"
+	case "disable-copy", "disable-paste", "disable-upload", "disable-download":
+		return "false"
+	case "normalize-clipboard":
+		// guacd 1.5 取值为 preserve/unix/windows，true 会被忽略
+		return "preserve"
+	case "clipboard-encoding":
+		return "UTF-8"
+	case "font-size":
+		return "14"
+	case "font-name":
+		return "monospace"
+	case "color-scheme":
+		return "gray-black"
+	case "terminal-type":
+		return "xterm-256color"
+	case "backspace":
+		return "127"
+	case "scrollback":
+		return "1000"
 	case "resize-method":
 		return "display-update"
 	case "server-layout":

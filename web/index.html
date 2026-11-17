@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117c">
+<link rel="stylesheet" href="/css/style.css?v=20261117d">
 </head>
 <body>
 <div id="app">
@@ -52,6 +52,7 @@
           <option value="ssh">SSH</option>
           <option value="vnc">VNC</option>
           <option value="rdp">RDP</option>
+          <option value="telnet">Telnet</option>
         </select>
       </div>
       <div class="form-row">
@@ -102,6 +103,14 @@
           <option value="8">8 位（极速，画质较低）</option>
         </select>
       </div>
+      <div class="form-row" id="vnc-quality-row">
+        <label>画质</label>
+        <select name="vnc_quality">
+          <option value="high">高清（画质优先）</option>
+          <option value="medium" selected>均衡（默认）</option>
+          <option value="low">流畅（省带宽，抗卡顿）</option>
+        </select>
+      </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn-secondary" onclick="closeModal()">取消</button>
@@ -149,6 +158,7 @@
   <div class="session-header">
     <span id="session-title"></span>
     <div class="session-controls">
+      <button id="btn-upload" title="上传文件到远程共享盘" class="hidden">⇪</button>
       <button id="btn-zoom-out" title="缩小">−</button>
       <button id="btn-zoom-reset" title="重置">⟲</button>
       <button id="btn-zoom-in" title="放大">+</button>
@@ -176,6 +186,6 @@
   import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
   window.Guacamole = Guacamole;
 </script>
-<script src="/js/app.js?v=20261117c"></script>
+<script src="/js/app.js?v=20261117d"></script>
 </body>
 </html>
