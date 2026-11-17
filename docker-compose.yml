@@ -13,6 +13,8 @@ services:
       - GUACD_ADDR=guacd:4822
     volumes:
       - ./data:/app/data
+      # RDP 共享盘落地目录：与 guacd 共用，供浏览器下载
+      - ./data/rdp-drive:/tmp/rcm-drive
       # 只读挂载宿主机 ~/.ssh，启动时自动导入私钥供选择
       - ${HOME}/.ssh:/host-ssh:ro
     extra_hosts:
@@ -26,3 +28,6 @@ services:
     image: guacamole/guacd:1.5.5
     container_name: rcm-guacd
     restart: unless-stopped
+    volumes:
+      # 与主程序共用 RDP 共享盘目录
+      - ./data/rdp-drive:/tmp/rcm-drive

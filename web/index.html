@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117e">
+<link rel="stylesheet" href="/css/style.css?v=20261117g">
 </head>
 <body>
 <div id="app">
@@ -173,6 +173,25 @@
   </div>
 </div>
 
+<!-- RDP 共享盘下载 -->
+<div id="drive-modal" class="modal hidden">
+  <div class="modal-content sftp-modal">
+    <div class="modal-header">
+      <h2 id="drive-title">共享盘</h2>
+      <div class="about-actions">
+        <button id="drive-refresh" class="btn-secondary">刷新</button>
+        <button class="close-btn" onclick="closeDriveModal()">&times;</button>
+      </div>
+    </div>
+    <div class="sftp-pathbar">
+      <button id="drive-up" title="上级目录">↑</button>
+      <input id="drive-path" type="text" spellcheck="false" placeholder="/" readonly>
+    </div>
+    <p class="hint">把远端桌面里的文件复制/拖入共享盘（Windows: \\tsclient\rcm，Linux: ~/thinclient_drives），即可在此下载。</p>
+    <div class="modal-body sftp-list" id="drive-list"></div>
+  </div>
+</div>
+
 <!-- SSH 端口转发 -->
 <div id="tunnel-modal" class="modal hidden">
   <div class="modal-content tunnel-modal">
@@ -198,6 +217,7 @@
     <span id="session-title"></span>
     <div class="session-controls">
       <button id="btn-upload" title="上传文件到远程共享盘" class="hidden">⇪</button>
+      <button id="btn-drive" title="共享盘文件下载" class="hidden">🖴</button>
       <button id="btn-sftp" title="文件管理（SFTP）" class="hidden">🗂</button>
       <button id="btn-tunnel" title="端口转发" class="hidden">⇄</button>
       <button id="btn-zoom-out" title="缩小">−</button>
@@ -227,6 +247,6 @@
   import Guacamole from '/vendor/guacamole/guacamole-common.min.js';
   window.Guacamole = Guacamole;
 </script>
-<script src="/js/app.js?v=20261117e"></script>
+<script src="/js/app.js?v=20261117g"></script>
 </body>
 </html>

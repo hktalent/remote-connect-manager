@@ -51,7 +51,7 @@
 - **RDP 画质可调**：连接配置里的「画质」对应 RDP 色深，可选 24 位（高清）、16 位（推荐，省带宽）、8 位（极速）。分辨率不变，只降低颜色精度，带宽和卡顿随之下降；改完需重连生效。
 - **优先有损编码**：握手时按 `image/webp → image/jpeg → image/png` 声明支持的格式，避免大块画面走 PNG 无损编码；同时设置 `force-lossless=false`。
 - **RDP 文件传输**：开启共享盘（`drive-name=rcm`），会话工具栏出现「⇪」上传按钮，选中的文件会出现在远端的共享盘中——Windows 为 `\\tsclient\rcm`，xrdp 为 `~/thinclient_drives/rcm`。
-- **共享盘下载**：远端往共享盘里写入的文件会通过 Guacamole `body` 指令回传，浏览器自动弹出下载（`onfilesystem` 注册 `rcm` 盘，`BlobReader` 收集后保存）。
+- **共享盘下载**：RDP 会话工具栏点「🖴」打开「共享盘」面板，可浏览目录、下载文件（支持断点续传）。共享盘落地在 guacd 的 `drive-path`（默认 `/tmp/rcm-drive`），Docker 部署时与主程序共用宿主机 `./data/rdp-drive`；远端往共享盘写入文件后，点「刷新」即可看到并下载。guacd 若下发 Guacamole `file` / `filesystem` 推送指令，浏览器也会自动弹出下载（`onfile`、`onfilesystem` 均已接）。
 - **双向剪贴板**：本地按 `Cmd+V` / `Ctrl+V` 通过 Guacamole clipboard 流把文本送入远端；远端复制的文本也会写回本地系统剪贴板（非 HTTPS 环境自动降级为 `execCommand`）。
 - **声音**：握手声明 `audio/L16`、`audio/L8`，RDP 会话的声音在浏览器里直接播放（需先点击过会话画面，满足浏览器的自动播放策略）。
 - **Telnet**：新增连接类型，默认端口 23，复用同一套 guacd 通道；配色、字号、`xterm-256color` 终端类型均已调好。Telnet 是明文协议，只建议在内网或隧道内使用。
@@ -189,6 +189,7 @@ compose 会拉起两个容器：
 | --- | --- |
 | `./data:/app/data` | 配置、密钥、截图持久化到宿主机 |
 | `${HOME}/.ssh:/host-ssh:ro` | 只读挂载宿主机 SSH 目录，启动时自动导入私钥 |
+| `./data/rdp-drive:/tmp/rcm-drive` | 两个容器共用，RDP 共享盘落地目录（浏览器显示下载的文件都在这） |
 | `PORT=8080` | 容器内监听端口 |
 | `GUACD_ADDR=guacd:4822` | RDP / Telnet 使用的 guacd 地址 |
 | `host.docker.internal:host-gateway` | 让容器能访问宿主机上的虚拟机 / 端口转发 |
@@ -332,6 +333,7 @@ data/
 | `GUACD_ADDR` | `127.0.0.1:4822` | RDP / Telnet 使用的 guacd 地址 |
 | `TUNNEL_PORT_BASE` | `20000` | SSH 端口转发可用区间起点 |
 | `TUNNEL_PORT_MAX` | `20010` | SSH 端口转发可用区间终点（compose 已映射该区间） |
+| `RCM_DRIVE_PATH` | `/tmp/rcm-drive` | RDP 共享盘目录（同时作为 guacd 的 `drive-path` 与本地下载源） |
 | `SSH_SCAN_DIR` | `/host-ssh` → `$HOME/.ssh` | 启动时扫描导入密钥的目录 |
 | `GIN_MODE` | `debug` | 设为 `release` 关闭调试日志 |
 
@@ -352,6 +354,8 @@ data/
 | POST | `/api/sftp/:id/mkdir`、`/api/sftp/:id/remove` | 新建目录 / 删除文件或目录 |
 | GET/POST | `/api/tunnels` | 隧道列表 / 新建（`connection_id`、`remote_host`、`remote_port`） |
 | DELETE | `/api/tunnels/:id` | 关闭隧道 |
+| GET | `/api/rdp-drive/list?path=` | 列出 RDP 共享盘（guacd `drive-path`）目录 |
+| GET | `/api/rdp-drive/download?path=` | 下载共享盘文件（支持 Range） |
 | WS | `/ws/ssh/:id`、`/ws/vnc/:id`、`/ws/guacamole/:id`、`/ws/telnet/:id` | SSH / VNC / RDP / Telnet 会话通道 |
 
 ## 常见问题
@@ -362,7 +366,7 @@ data/
 
 **VNC 卡顿**：编辑该连接，把「画质」调成「流畅」（颜色精度下降、压缩加强），重连生效。
 
-**RDP 上传的文件在哪**：点会话工具栏的「⇪」选择文件，文件进入远端共享盘 `rcm`——Windows 在 `\\tsclient\rcm`，xrdp 在 `~/thinclient_drives/rcm`。
+**RDP 上传的文件在哪**：点会话工具栏的「⇪」选择文件，文件进入远端共享盘 `rcm`——Windows 在 `\\tsclient\rcm`，xrdp 在 `~/thinclient_drives/rcm`。反向下载在会话工具栏的「🖴」面板里，看到的就是同一个共享盘。
 
 **远端复制的文本没进本地剪贴板**：HTTPS 下用 `navigator.clipboard`，HTTP 下自动降级为 `execCommand('copy')`；部分浏览器会拦截后台写入，点一下页面再复制一次即可。
 

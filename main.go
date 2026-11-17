@@ -10,6 +10,7 @@ import (
 	"remote-connect-manager/internal/config"
 	"remote-connect-manager/internal/keys"
 	"remote-connect-manager/internal/rdp"
+	"remote-connect-manager/internal/rdpdrive"
 	"remote-connect-manager/internal/screenshot"
 	sftpx "remote-connect-manager/internal/sftp"
 	"remote-connect-manager/internal/ssh"
@@ -33,6 +34,9 @@ func main() {
 	}
 	if err := screenshot.Init("./data/screenshots"); err != nil {
 		log.Fatalf("init screenshot dir: %v", err)
+	}
+	if err := rdpdrive.Ensure(); err != nil {
+		log.Printf("init rdp drive dir: %v", err)
 	}
 	keys.Init("./data/keys")
 	// 启动时自动把 ~/.ssh 下的私钥导入密钥库，供界面选择
@@ -80,6 +84,10 @@ func main() {
 		api.GET("/tunnels", tunnel.List)
 		api.POST("/tunnels", tunnel.Create)
 		api.DELETE("/tunnels/:id", tunnel.Delete)
+
+		// RDP 共享盘（guacd drive-path 落地目录）：列出与下载远端放入的文件
+		api.GET("/rdp-drive/list", rdpdrive.List)
+		api.GET("/rdp-drive/download", rdpdrive.Download)
 	}
 
 	// WebSocket endpoints

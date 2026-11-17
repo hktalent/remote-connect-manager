@@ -309,8 +309,15 @@ func argValue(name string, conn *config.Connection) string {
 		return "true"
 	case "drive-name":
 		return "rcm"
+	case "drive-path":
+		// guacd 侧的共享盘落地目录，必须存在且可写，否则远端文件操作会被
+		// "File open refused (-2)" 拒绝，浏览器也拿不到文件内容
+		if v := os.Getenv("RCM_DRIVE_PATH"); v != "" {
+			return v
+		}
+		return "/tmp/rcm-drive"
 	case "create-drive-path":
-		return "false"
+		return "true"
 	case "disable-audio", "disable-audio-input":
 		return "false"
 	case "enable-sftp", "console", "read-only":

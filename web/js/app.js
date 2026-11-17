@@ -30,6 +30,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const s = activeSession();
     if (s) openTunnelModal(s.conn);
   });
+  document.getElementById('btn-drive').addEventListener('click', () => {
+    const s = activeSession();
+    if (s) openDriveModal(s.conn);
+  });
   document.getElementById('sftp-upload-btn').addEventListener('click', uploadSftpFile);
   document.getElementById('sftp-mkdir-btn').addEventListener('click', mkdirSftp);
   document.getElementById('sftp-up').addEventListener('click', () => {
@@ -44,6 +48,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') loadSftp(e.target.value.trim() || '/');
   });
   document.getElementById('tunnel-form').addEventListener('submit', createTunnel);
+  document.getElementById('drive-refresh').addEventListener('click', () => loadDrive(driveCurrent));
+  document.getElementById('drive-up').addEventListener('click', () => {
+    if (!driveCurrent) return;
+    const parent = driveCurrent.split('/').slice(0, -1).join('/');
+    loadDrive(parent);
+  });
   // 系统剪贴板粘贴（Cmd+V / Ctrl+V）直接转发到当前会话
   document.addEventListener('paste', pasteToSession, true);
 });
@@ -423,6 +433,7 @@ function showViewer(sess) {
   // 文件上传只对 RDP（共享盘）提供；SFTP 与端口转发只对 SSH 提供
   const type = sess.conn.type;
   document.getElementById('btn-upload').classList.toggle('hidden', type !== 'rdp');
+  document.getElementById('btn-drive').classList.toggle('hidden', type !== 'rdp');
   document.getElementById('btn-sftp').classList.toggle('hidden', type !== 'ssh');
   document.getElementById('btn-tunnel').classList.toggle('hidden', type !== 'ssh');
   document.getElementById('session-viewer').classList.remove('hidden');
@@ -744,9 +755,9 @@ function startGuacSession(conn, stage) {
     reader.onend = () => { if (text) writeLocalClipboard(text); };
   };
 
-  // RDP 共享盘：远端写入的文件以 body 指令下发，直接触发浏览器下载
-  client.onfilesystem = (object, name) => {
-    if (name !== 'rcm') return;
+  // RDP 共享盘：远端写入的文件以 body 指令下发，直接触发浏览器下载。
+  // 注意 guacd 下发的 filesystem 名称固定为 "Shared Drive"，不能用 drive-name 判断。
+  client.onfilesystem = (object) => {
     object.onbody = (stream, mimetype, filename) => {
       try {
         const reader = new Guacamole.BlobReader(stream, mimetype || 'application/octet-stream');
@@ -755,6 +766,16 @@ function startGuacSession(conn, stage) {
         console.error('共享盘下载失败', e);
       }
     };
+  };
+
+  // guacd 1.5 把共享盘下载以 file 指令推给浏览器（部分版本走 filesystem/body）
+  client.onfile = (stream, mimetype, filename) => {
+    try {
+      const reader = new Guacamole.BlobReader(stream, mimetype || 'application/octet-stream');
+      reader.onend = () => saveBlob(reader.getBlob(), filename);
+    } catch (e) {
+      console.error('共享盘下载失败', e);
+    }
   };
 
   // 握手由后端完成，这里不需要传连接参数
@@ -1246,6 +1267,56 @@ function formatSize(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// ====== RDP 共享盘（guacd drive-path 落地目录）======
+let driveCurrent = '';
+
+function openDriveModal(conn) {
+  document.getElementById('drive-title').textContent = `共享盘 - ${conn.name}`;
+  document.getElementById('drive-modal').classList.remove('hidden');
+  loadDrive('');
+}
+
+function closeDriveModal() {
+  document.getElementById('drive-modal').classList.add('hidden');
+}
+
+async function loadDrive(p) {
+  const list = document.getElementById('drive-list');
+  list.innerHTML = '<div class="sftp-empty">加载中…</div>';
+  try {
+    const res = await fetch(`/api/rdp-drive/list?path=${encodeURIComponent(p || '')}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    driveCurrent = (data.path || '/').replace(/^\/+/, '');
+    document.getElementById('drive-path').value = data.path || '/';
+    renderDriveEntries(data.entries || []);
+  } catch (e) {
+    list.innerHTML = `<div class="sftp-empty">${escapeHTML(e.message)}</div>`;
+  }
+}
+
+function renderDriveEntries(entries) {
+  const list = document.getElementById('drive-list');
+  if (!entries.length) {
+    list.innerHTML = '<div class="sftp-empty">共享盘中暂无文件</div>';
+    return;
+  }
+  list.innerHTML = entries.map((e) => `
+    <div class="sftp-row">
+      <span>${e.dir ? '📁' : '📄'}</span>
+      <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}">${escapeHTML(e.name)}</span>
+      <span class="meta">${e.dir ? '-' : formatSize(e.size)}</span>
+      <span class="meta">${(e.mod_time || '').replace('T', ' ').slice(0, 19)}</span>
+      <span>${e.dir ? '' : `<a href="/api/rdp-drive/download?path=${encodeURIComponent(e.path)}" download>下载</a>`}</span>
+    </div>`).join('');
+
+  list.querySelectorAll('.name').forEach((el) => {
+    el.addEventListener('click', () => {
+      if (el.dataset.dir === 'true') loadDrive(el.dataset.path);
+    });
+  });
 }
 
 // 触发浏览器保存 Blob（RDP 共享盘下载）
