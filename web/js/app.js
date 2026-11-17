@@ -28,8 +28,8 @@ document.addEventListener('DOMContentLoaded', () => {
 function pasteToSession(e) {
   const viewer = document.getElementById('session-viewer');
   if (!viewer || viewer.classList.contains('hidden')) return;
-  const target = e.target;
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+  // 弹窗里的输入框保留浏览器默认粘贴；xterm 的隐藏 textarea 交给会话处理
+  if (e.target && e.target.closest && e.target.closest('.modal')) return;
   const sess = activeSession();
   if (!sess || typeof sess.paste !== 'function') return;
   const cd = e.clipboardData || window.clipboardData;
@@ -568,9 +568,20 @@ function startSSHSession(conn, stage) {
     close: () => {
       sess.closed = true;
       window.removeEventListener('resize', onResize);
+      try { ro && ro.disconnect(); } catch (e) {}
       try { ws.close(); } catch (e) {}
     },
   };
+
+  // 容器尺寸变化（浏览器窗口缩放、全屏切换、布局变化）时同步终端行列数
+  let ro = null;
+  if (window.ResizeObserver) {
+    ro = new ResizeObserver(() => {
+      if (sess.closed) return;
+      requestAnimationFrame(() => { fit(); resize(); });
+    });
+    ro.observe(stage);
+  }
 
   ws.onopen = () => { fit(); resize(); };
   ws.onmessage = (ev) => {
