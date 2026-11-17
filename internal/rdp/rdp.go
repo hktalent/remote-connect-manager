@@ -1,8 +1,12 @@
 package rdp
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +21,13 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+// guacamole-common-js 建连时声明子协议 "guacamole"，
+// 服务端必须回显该子协议，否则浏览器会以 1006 立即断开
+var guacUpgrader = websocket.Upgrader{
+	CheckOrigin:  func(r *http.Request) bool { return true },
+	Subprotocols: []string{"guacamole"},
 }
 
 // guacd 地址，默认本机；容器编排时通过 GUACD_ADDR 指向 guacd 服务
@@ -42,7 +53,7 @@ func HandleGuacamoleTunnel(c *gin.Context) {
 		return
 	}
 
-	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	ws, err := guacUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
 	}
@@ -98,16 +109,32 @@ func HandleGuacamoleTunnel(c *gin.Context) {
 	}
 
 	// 5) 双向透传（浏览器端 Guacamole.Client 不在连接时发送数据，握手由服务端完成）
+	// guacamole-common-js 的 WebSocketTunnel 要求：
+	//   a) 先收到内部指令 0.<uuid>; 才会把隧道置为 OPEN，之后客户端才能回 sync/nop
+	//   b) 每条 WebSocket 消息必须是完整指令（以 ; 结尾），否则会按 "Incomplete instruction" 断开
+	if err := ws.WriteMessage(websocket.TextMessage,
+		[]byte(guacEncode([]string{"0", tunnelUUID()}))); err != nil {
+		return
+	}
+
 	done := make(chan struct{}, 2)
 
 	go func() {
 		buf := make([]byte, 65536)
+		pending := make([]byte, 0, 65536)
 		for {
 			n, err := guacConn.Read(buf)
 			if n > 0 {
-				ws.WriteMessage(websocket.TextMessage, buf[:n])
+				pending = append(pending, buf[:n]...)
+				if idx := bytes.LastIndexByte(pending, ';'); idx >= 0 {
+					if werr := ws.WriteMessage(websocket.TextMessage, pending[:idx+1]); werr != nil {
+						log.Printf("rdp tunnel: ws write failed: %v", werr)
+					}
+					pending = append(pending[:0], pending[idx+1:]...)
+				}
 			}
 			if err != nil {
+				log.Printf("rdp tunnel: guacd read ended: %v", err)
 				done <- struct{}{}
 				return
 			}
@@ -118,10 +145,18 @@ func HandleGuacamoleTunnel(c *gin.Context) {
 		for {
 			_, data, err := ws.ReadMessage()
 			if err != nil {
+				log.Printf("rdp tunnel: ws read ended: %v", err)
 				done <- struct{}{}
 				return
 			}
-			guacConn.Write(data)
+			// 过滤隧道内部保活指令（0.ping 等），guacd 不认识该 opcode
+			payload := filterInternalInstructions(string(data))
+			if payload == "" {
+				continue
+			}
+			if _, werr := guacConn.Write([]byte(payload)); werr != nil {
+				log.Printf("rdp tunnel: guacd write failed: %v", werr)
+			}
 		}
 	}()
 
@@ -142,6 +177,45 @@ func guacEncode(parts []string) string {
 	}
 	sb.WriteByte(';')
 	return sb.String()
+}
+
+// tunnelUUID 生成隧道标识，用于 0.<uuid>; 内部指令（仅前端隧道状态机使用）
+func tunnelUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b)
+}
+
+// filterInternalInstructions 去掉 opcode 为 "0" 的隧道内部指令（如 0.ping），
+// 其余完整指令原样保留。
+func filterInternalInstructions(s string) string {
+	if s == "" {
+		return ""
+	}
+	var sb strings.Builder
+	for _, ins := range strings.Split(s, ";") {
+		if ins == "" || opcodeOf(ins) == "0" {
+			continue
+		}
+		sb.WriteString(ins)
+		sb.WriteByte(';')
+	}
+	return sb.String()
+}
+
+// opcodeOf 从 "<len>.<opcode>,..." 中解析出 opcode
+func opcodeOf(ins string) string {
+	dot := strings.Index(ins, ".")
+	if dot <= 0 {
+		return ""
+	}
+	n, err := strconv.Atoi(ins[:dot])
+	if err != nil || dot+1+n > len(ins) {
+		return ""
+	}
+	return ins[dot+1 : dot+1+n]
 }
 
 // decodeInstruction 去掉长度前缀并拆分为元素

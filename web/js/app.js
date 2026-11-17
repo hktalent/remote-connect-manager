@@ -20,7 +20,25 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(-0.1));
   document.getElementById('btn-zoom-reset').addEventListener('click', () => setZoom(1));
   document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
+  // 系统剪贴板粘贴（Cmd+V / Ctrl+V）直接转发到当前会话
+  document.addEventListener('paste', pasteToSession, true);
 });
+
+// 捕获阶段处理粘贴：避免依赖终端内部 textarea 是否获得焦点
+function pasteToSession(e) {
+  const viewer = document.getElementById('session-viewer');
+  if (!viewer || viewer.classList.contains('hidden')) return;
+  const target = e.target;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+  const sess = activeSession();
+  if (!sess || typeof sess.paste !== 'function') return;
+  const cd = e.clipboardData || window.clipboardData;
+  const text = cd ? cd.getData('text') : '';
+  if (!text) return;
+  e.preventDefault();
+  e.stopPropagation();
+  sess.paste(text);
+}
 
 async function loadConnections() {
   const res = await fetch('/api/connections');
@@ -542,6 +560,11 @@ function startSSHSession(conn, stage) {
     conn, stage, element: termDiv, zoom: 1, timer: null, closed: false,
     snapshot: () => compositeTerminalCanvas(termDiv),
     refit: onResize,
+    paste: (text) => {
+      try { term.paste(text); } catch (e) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(text);
+      }
+    },
     close: () => {
       sess.closed = true;
       window.removeEventListener('resize', onResize);
@@ -594,6 +617,7 @@ function startVNCSession(conn, stage) {
     conn, stage, element: div, zoom: 1, timer: null, closed: false,
     snapshot: () => div.querySelector('canvas'),
     refit: () => { try { rfb.scaleViewport = true; } catch (e) {} },
+    paste: (text) => { try { rfb.clipboardPasteFrom(text); } catch (e) {} },
     close: () => {
       sess.closed = true;
       try { rfb.disconnect(); } catch (e) {}
@@ -637,6 +661,14 @@ function startRDPSession(conn, stage) {
     conn, stage, element: div, zoom: 1, timer: null, closed: false,
     snapshot: () => div.querySelector('canvas'),
     refit: () => {},
+    // 通过 clipboard 流把文本送入远端剪贴板，需在远端桌面内粘贴
+    paste: (text) => {
+      try {
+        const writer = new Guacamole.StringWriter(client.createClipboardStream('text/plain'));
+        writer.sendText(text);
+        writer.sendEnd();
+      } catch (e) {}
+    },
     close: () => {
       sess.closed = true;
       try { client.disconnect(); } catch (e) {}
