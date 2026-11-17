@@ -467,7 +467,9 @@ body {
   font-size: 12px;
 }
 
-/* 底部链接栏：固定在最底部，始终可见 */
+/* 底部链接栏：固定在最底部，始终可见
+   整块 <footer>（左链接 + 右附加项）由 /js/footer.js 生成，数据源 MyWork/site-links/links.json，
+   此处只管排版；左右两栏靠 justify-content: space-between 分开 */
 .app-footer {
   position: fixed;
   left: 0;
@@ -485,7 +487,9 @@ body {
   border-top: 1px solid #2a3040;
   font-size: 13px;
 }
-.app-footer nav { display: flex; gap: 16px; flex-wrap: wrap; }
+.app-footer nav,
+.app-footer .foot-links,
+.app-footer .foot-extras { display: flex; gap: 16px; flex-wrap: wrap; }
 .app-footer a { color: #9fb3d1; text-decoration: none; }
 .app-footer a:hover { color: #4f8cff; text-decoration: underline; }
 
