@@ -36,6 +36,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('sftp-upload-btn').addEventListener('click', uploadSftpFile);
   document.getElementById('sftp-mkdir-btn').addEventListener('click', mkdirSftp);
+  document.getElementById('sftp-del-btn').addEventListener('click', () => {
+    removeSftpItems(Array.from(sftpSelected, ([path, dir]) => ({ path, dir })), true);
+  });
   document.getElementById('sftp-sync-btn').addEventListener('click', () => {
     if (!sftpConn) return;
     syncToLocal(sftpSource(sftpConn.id), sftpCurrent || '.');
@@ -1348,13 +1351,27 @@ function renderMarkdown(md) {
 // ====== SFTP 文件管理 ======
 let sftpConn = null;
 let sftpCurrent = '';
+let sftpEntries = [];
+let sftpSelected = new Map(); // path -> dir，批量删除用
 
-function openSftpModal(conn) {
+async function openSftpModal(conn) {
   sftpConn = conn;
   sftpCurrent = '';
+  sftpEntries = [];
+  sftpSelected.clear();
   document.getElementById('sftp-title').textContent = `文件管理 - ${conn.name}`;
   document.getElementById('sftp-modal').classList.remove('hidden');
-  loadSftp('.');
+  updateSftpSelUI();
+  // 优先打开该 SSH 会话当前的目录（后端从 cd 命令跟踪），拿不到就用家目录
+  let start = '.';
+  try {
+    const res = await fetch(`/api/ssh/${conn.id}/cwd`);
+    if (res.ok) {
+      const d = await res.json();
+      if (d && d.cwd) start = d.cwd;
+    }
+  } catch (e) {}
+  loadSftp(start);
 }
 
 function closeSftpModal() {
@@ -1379,12 +1396,24 @@ async function loadSftp(p) {
 
 function renderSftpEntries(entries) {
   const list = document.getElementById('sftp-list');
+  sftpEntries = entries;
+  sftpSelected.clear();
+  updateSftpSelUI();
   if (!entries.length) {
     list.innerHTML = '<div class="sftp-empty">空目录</div>';
     return;
   }
-  list.innerHTML = entries.map((e) => `
-    <div class="sftp-row">
+  list.innerHTML = `
+    <div class="sftp-row sftp-head">
+      <input type="checkbox" id="sftp-check-all" title="全选当前目录">
+      <span></span>
+      <span class="meta">名称</span>
+      <span class="meta">大小</span>
+      <span class="meta">修改时间</span>
+      <span></span>
+    </div>` + entries.map((e) => `
+    <div class="sftp-row" data-path="${escapeHTML(e.path)}">
+      <input type="checkbox" class="sftp-check" title="选择" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}">
       <span>${e.dir ? '📁' : '📄'}</span>
       <span class="name ${e.dir ? 'dir' : ''}" data-path="${escapeHTML(e.path)}" data-dir="${e.dir}" data-name="${escapeHTML(e.name)}">${escapeHTML(e.name)}</span>
       <span class="meta">${e.dir ? '-' : formatSize(e.size)}</span>
@@ -1402,8 +1431,114 @@ function renderSftpEntries(entries) {
     bindDragOut(el, `/api/sftp/${sftpConn.id}/download?path=${encodeURIComponent(el.dataset.path)}`, el.dataset.name);
   });
   list.querySelectorAll('[data-del]').forEach((el) => {
-    el.addEventListener('click', () => removeSftp(el.dataset.del, el.dataset.dir === 'true'));
+    el.addEventListener('click', () =>
+      removeSftpItems([{ path: el.dataset.del, dir: el.dataset.dir === 'true' }], true));
   });
+  list.querySelectorAll('.sftp-check').forEach((el) => {
+    el.addEventListener('change', () => {
+      const p = el.dataset.path;
+      if (el.checked) sftpSelected.set(p, el.dataset.dir === 'true');
+      else sftpSelected.delete(p);
+      const row = el.closest('.sftp-row');
+      if (row) row.classList.toggle('selected', el.checked);
+      syncSftpCheckAll();
+      updateSftpSelUI();
+    });
+  });
+  const all = document.getElementById('sftp-check-all');
+  if (all) {
+    all.addEventListener('change', () => {
+      list.querySelectorAll('.sftp-check').forEach((el) => {
+        if (el.checked === all.checked) return;
+        el.checked = all.checked;
+        const p = el.dataset.path;
+        if (el.checked) sftpSelected.set(p, el.dataset.dir === 'true');
+        else sftpSelected.delete(p);
+        const row = el.closest('.sftp-row');
+        if (row) row.classList.toggle('selected', el.checked);
+      });
+      syncSftpCheckAll();
+      updateSftpSelUI();
+    });
+  }
+}
+
+// 表头全选框跟随当前选择状态
+function syncSftpCheckAll() {
+  const all = document.getElementById('sftp-check-all');
+  if (!all) return;
+  const boxes = Array.from(document.querySelectorAll('#sftp-list .sftp-check'));
+  const on = boxes.filter((b) => b.checked).length;
+  all.checked = boxes.length > 0 && on === boxes.length;
+  all.indeterminate = on > 0 && on < boxes.length;
+}
+
+function updateSftpSelUI() {
+  const btn = document.getElementById('sftp-del-btn');
+  if (!btn) return;
+  btn.textContent = `删除选中 (${sftpSelected.size})`;
+  btn.classList.toggle('hidden', sftpSelected.size === 0);
+}
+
+// 删除成功后只摘掉对应行，不重绘整表，避免闪烁与滚动位置丢失
+function dropSftpRows(paths) {
+  const list = document.getElementById('sftp-list');
+  paths.forEach((p) => {
+    const row = Array.from(list.querySelectorAll('.sftp-row:not(.sftp-head)'))
+      .find((r) => r.dataset.path === p);
+    if (row) row.remove();
+    sftpSelected.delete(p);
+    sftpEntries = sftpEntries.filter((e) => e.path !== p);
+  });
+  if (!list.querySelectorAll('.sftp-row:not(.sftp-head)').length) {
+    list.innerHTML = '<div class="sftp-empty">空目录</div>';
+  }
+  syncSftpCheckAll();
+  updateSftpSelUI();
+}
+
+// 批量/单项删除；失败项仅标红，不影响已成功的项
+async function removeSftpItems(items, needConfirm) {
+  if (!sftpConn || !items.length) return;
+  if (needConfirm) {
+    const tip = items.length > 1 ? `确定删除选中的 ${items.length} 项（目录将递归删除）？` : `确定删除 ${items[0].path}${items[0].dir ? '（目录）' : ''}？`;
+    if (!confirm(tip + (items.length > 1 ? `\n${items.map((i) => i.path).join('\n')}` : ''))) return;
+  }
+  const list = document.getElementById('sftp-list');
+  const rowsOf = (p) => Array.from(list.querySelectorAll('.sftp-row')).find((r) => r.dataset.path === p);
+  const rows = items.map((i) => rowsOf(i.path)).filter(Boolean);
+  rows.forEach((r) => {
+    r.classList.remove('failed');
+    r.classList.add('removing');
+  });
+  try {
+    const res = await fetch(`/api/sftp/${sftpConn.id}/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: items }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok && !(d.failed && d.failed.length)) {
+      rows.forEach((r) => r.classList.remove('removing'));
+      alert('删除失败：' + (d.error || res.statusText));
+      return;
+    }
+    dropSftpRows(d.removed || []);
+    (d.failed || []).forEach((f) => {
+      const row = rowsOf(f.path);
+      if (!row) return;
+      row.classList.remove('removing');
+      row.classList.add('failed');
+      const name = row.querySelector('.name');
+      if (name) name.title = `删除失败：${f.error}`;
+    });
+    if ((d.failed || []).length) {
+      alert(`${d.failed.length} 项删除失败，已在列表中标红（鼠标悬停文件名可看原因）`);
+    }
+  } catch (e) {
+    rows.forEach((r) => r.classList.remove('removing'));
+    alert('删除失败：' + e.message);
+  }
 }
 
 function downloadSftp(p) {
@@ -1452,20 +1587,6 @@ async function mkdirSftp() {
   if (!res.ok) {
     const d = await res.json().catch(() => ({}));
     alert('创建失败：' + (d.error || res.statusText));
-  }
-  loadSftp(sftpCurrent);
-}
-
-async function removeSftp(p, isDir) {
-  if (!confirm(`确定删除 ${p}${isDir ? '（目录）' : ''}？`)) return;
-  const res = await fetch(`/api/sftp/${sftpConn.id}/remove`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: p, dir: isDir }),
-  });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert('删除失败：' + (d.error || res.statusText));
   }
   loadSftp(sftpCurrent);
 }

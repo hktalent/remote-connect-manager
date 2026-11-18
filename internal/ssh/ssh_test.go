@@ -86,3 +86,60 @@ func TestHandleSSHSendsBinaryFrames(t *testing.T) {
 		t.Fatalf("输出不完整：%q", got)
 	}
 }
+
+// 端到端验证：WebSocket 里输入 cd 后，SFTP 面板查询的当前目录随之更新
+func TestHandleSSHTracksCwd(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := func(ch ssh.Channel, reqs <-chan *ssh.Request) {
+		for req := range reqs {
+			switch req.Type {
+			case "pty-req", "shell":
+				req.Reply(true, nil)
+			case "exec": // homeDir 探测 $HOME，这里直接结束该通道
+				req.Reply(true, nil)
+				ch.Close()
+				return
+			default:
+				req.Reply(false, nil)
+			}
+		}
+	}
+
+	srv := testutil.StartSSH(t, handler)
+	id := testutil.RegisterConnection(t, srv)
+
+	r := gin.New()
+	r.GET("/ws/ssh/:id", HandleSSH)
+	httpSrv := httptest.NewServer(r)
+	defer httpSrv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/ws/ssh/" + id
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.WriteMessage(websocket.BinaryMessage, []byte("cd /var/log\r")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitCwd := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if dir, ok := GetCwd(id); ok && dir == want {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		dir, _ := GetCwd(id)
+		t.Fatalf("cwd = %q, want %q", dir, want)
+	}
+	waitCwd("/var/log")
+
+	if err := c.WriteMessage(websocket.BinaryMessage, []byte("cd ..\r")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitCwd("/var")
+}

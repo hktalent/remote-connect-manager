@@ -169,6 +169,18 @@ type pathReq struct {
 	Dir  bool   `json:"dir"`
 }
 
+type removeItem struct {
+	Path string `json:"path"`
+	Dir  bool   `json:"dir"`
+}
+
+// removeReq 兼容单个 path 与批量 paths 两种请求体
+type removeReq struct {
+	Path  string       `json:"path"`
+	Dir   bool         `json:"dir"`
+	Paths []removeItem `json:"paths"`
+}
+
 // Mkdir 创建目录（支持多级）
 func Mkdir(c *gin.Context) {
 	var req pathReq
@@ -190,10 +202,20 @@ func Mkdir(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"path": req.Path})
 }
 
-// Remove 删除文件或目录
+// Remove 删除文件或目录，支持一次提交多个路径。
+// 逐个执行并汇总结果：removed 为成功项，failed 为失败项（含原因），
+// 单个失败不会中断整批，便于前端做局部更新。
 func Remove(c *gin.Context) {
-	var req pathReq
-	if err := c.ShouldBindJSON(&req); err != nil || req.Path == "" {
+	var req removeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	items := req.Paths
+	if len(items) == 0 && req.Path != "" {
+		items = []removeItem{{Path: req.Path, Dir: req.Dir}}
+	}
+	if len(items) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path required"})
 		return
 	}
@@ -204,15 +226,28 @@ func Remove(c *gin.Context) {
 	defer cl.Close()
 	defer sc.Close()
 
-	var err error
-	if req.Dir {
-		err = sc.RemoveDirectory(req.Path)
-	} else {
-		err = sc.Remove(req.Path)
+	removed := make([]string, 0, len(items))
+	failed := make([]gin.H, 0)
+	for _, it := range items {
+		if it.Path == "" {
+			continue
+		}
+		var err error
+		if it.Dir {
+			// 目录递归删除：pkg/sftp 的 RemoveDirectory 只能删空目录
+			err = sc.RemoveAll(it.Path)
+		} else {
+			err = sc.Remove(it.Path)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			failed = append(failed, gin.H{"path": it.Path, "error": err.Error()})
+			continue
+		}
+		removed = append(removed, it.Path)
 	}
-	if err != nil && !os.IsNotExist(err) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if len(removed) == 0 && len(failed) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": failed[0]["error"], "failed": failed})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"removed": req.Path})
+	c.JSON(http.StatusOK, gin.H{"removed": removed, "failed": failed})
 }

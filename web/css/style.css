@@ -595,7 +595,7 @@ body {
 .sftp-list { padding: 0 !important; max-height: 60vh; overflow-y: auto; }
 .sftp-row {
   display: grid;
-  grid-template-columns: 22px minmax(120px, 1fr) 90px 150px 90px;
+  grid-template-columns: 22px 22px minmax(120px, 1fr) 90px 150px 90px;
   gap: 8px;
   align-items: center;
   padding: 8px 24px;
@@ -603,6 +603,21 @@ body {
   font-size: 13px;
 }
 .sftp-row:hover { background: #161b28; }
+.sftp-row.selected { background: #1a2438; }
+.sftp-row .sftp-check { accent-color: #4f8cff; cursor: pointer; margin: 0; }
+.sftp-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #141a26;
+  border-bottom: 1px solid #2a3040;
+  font-size: 12px;
+  color: #8892a6;
+}
+.sftp-head:hover { background: #141a26; }
+.sftp-row.removing { opacity: .45; transition: opacity .15s ease; }
+.sftp-row.failed { background: rgba(255, 107, 107, .12); }
+.sftp-row.failed .name { color: #ff8f8f; }
 .sftp-row .name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sftp-row .name.dir { color: #7fb2ff; }
 .sftp-row .name.drag-out { cursor: grab; }

@@ -273,6 +273,83 @@ func TestMkdirAndRemove(t *testing.T) {
 	}
 }
 
+func TestRemoveBatch(t *testing.T) {
+	r, id, root := setup(t)
+
+	f1 := filepath.Join(root, "batch-1.txt")
+	f2 := filepath.Join(root, "batch-2.txt")
+	dir := filepath.Join(root, "batch-dir")
+	for _, f := range []string{f1, f2} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"paths":[{"path":` + quote(f1) + `},{"path":` + quote(f2) + `},{"path":` + quote(dir) + `,"dir":true}]}`
+	rec := doJSON(t, r, http.MethodPost, "/api/sftp/"+id+"/remove", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch remove status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Removed []string `json:"removed"`
+		Failed  []struct {
+			Path string `json:"path"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Removed) != 3 || len(resp.Failed) != 0 {
+		t.Fatalf("removed = %v, failed = %+v", resp.Removed, resp.Failed)
+	}
+	for _, p := range []string{f1, f2, dir} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s 应已删除, err = %v", p, err)
+		}
+	}
+}
+
+func TestRemoveBatchPartialFailure(t *testing.T) {
+	r, id, root := setup(t)
+
+	f := filepath.Join(root, "keep-me.txt")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 非空目录按“文件”方式删除会失败（SFTP REMOVE 拒绝非空目录），用来触发失败分支
+	ghost := filepath.Join(root, "not-empty")
+	if err := os.MkdirAll(ghost, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ghost, "child.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"paths":[{"path":` + quote(f) + `},{"path":` + quote(ghost) + `}]}`
+	rec := doJSON(t, r, http.MethodPost, "/api/sftp/"+id+"/remove", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Removed []string `json:"removed"`
+		Failed  []struct {
+			Path  string `json:"path"`
+			Error string `json:"error"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Removed) != 1 || resp.Removed[0] != f {
+		t.Fatalf("removed = %v, want [%s]", resp.Removed, f)
+	}
+	if len(resp.Failed) != 1 || resp.Failed[0].Path != ghost || resp.Failed[0].Error == "" {
+		t.Fatalf("failed = %+v, want path %s 且带错误原因", resp.Failed, ghost)
+	}
+}
+
 func TestMkdirRequiresPath(t *testing.T) {
 	r, id, _ := setup(t)
 	if rec := doJSON(t, r, http.MethodPost, "/api/sftp/"+id+"/mkdir", `{}`); rec.Code != http.StatusBadRequest {

@@ -113,6 +113,14 @@ func HandleSSH(c *gin.Context) {
 	}
 	defer sshClient.Close()
 
+	// 追踪交互式 shell 的当前目录（起点为远端的 $HOME），SFTP 面板打开时据此定位
+	tr := &cwdTracker{}
+	if home := homeDir(sshClient); home != "" {
+		tr.seed(home)
+		SetCwd(id, home)
+	}
+	defer clearCwd(id)
+
 	session, err := sshClient.NewSession()
 	if err != nil {
 		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
@@ -219,6 +227,10 @@ func HandleSSH(c *gin.Context) {
 			if err := json.Unmarshal(data, &msg); err == nil && msg.Type == "resize" {
 				session.WindowChange(msg.Rows, msg.Cols)
 				continue
+			}
+			// 从输入里解析 cd，同步给 SFTP 面板
+			if dir, changed := tr.feed(data); changed {
+				SetCwd(id, dir)
 			}
 			stdin.Write(data)
 		}

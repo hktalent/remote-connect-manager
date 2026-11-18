@@ -52,6 +52,9 @@ docker run -d --name remote-connect-manager \
 ### SFTP 文件管理与端口转发
 
 - **SFTP 文件管理**：SSH 会话工具栏点「🗂」打开面板，可浏览目录、进上级、直接输入路径跳转、下载文件、上传文件、新建目录、删除文件/目录。后端复用同一套密钥/密码认证，按需建立独立 SFTP 连接，用完即断。
+- **打开即定位到当前目录**：面板打开时会向后端取该 SSH 会话的 shell 当前目录（后端从终端输入里的 `cd` 解析，起点是远端 `$HOME`），直接列在那里，不用再手输路径；会话里还没切过目录、或用了 `cd -` / `pushd` / `tmux` 等无法推断的情况，回落到家目录，鼠标点路径栏输入即可。
+- **批量选择与删除**：每行行首复选框 + 表头全选（支持半选态），选中后工具栏出现「删除选中 (n)」，一次删除多个文件/目录；目录按递归删除（非空目录也能一次删掉）。
+- **异步删除、界面不闪烁**：删除采用异步提交，成功后只把对应行从列表里摘掉，**不整表重绘**，因此没有闪烁、滚动位置和当前路径都不变，空目录时才切到「空目录」提示；批量里个别项失败不影响其余项，失败行标红、悬停文件名可看失败原因。
 - **SSH 端口转发**：SSH 会话工具栏点「⇄」，填目标主机（默认 `127.0.0.1`）和目标端口，即可创建一条本地转发；界面显示 `localhost:<本地端口>` 访问地址，支持随时删除。
 - 转发端口取自 `TUNNEL_PORT_BASE`~`TUNNEL_PORT_MAX`（默认 20000-20010），Docker 已把该区间映射到宿主机，因此在宿主机用 `localhost:20000` 即可访问远端内网服务（MySQL、Redis、内部 Web 等）。
 - 隧道随进程生命周期存在，重启应用后需重新创建；连接断开时会自动释放端口。
@@ -594,7 +597,8 @@ data/
 | GET | `/api/sftp/:id/list?path=` | 列出远端目录 |
 | GET | `/api/sftp/:id/download?path=` | 下载远端文件 |
 | POST | `/api/sftp/:id/upload` | 上传文件（multipart：`file` + `path`，可选 `rel` 为相对 `path` 的目标路径，用于文件夹上传，父目录自动创建） |
-| POST | `/api/sftp/:id/mkdir`、`/api/sftp/:id/remove` | 新建目录 / 删除文件或目录 |
+| POST | `/api/sftp/:id/mkdir`、`/api/sftp/:id/remove` | 新建目录 / 删除（支持批量：`{"paths":[{"path":"/a","dir":false},…]}`，返回 `removed` / `failed`，仍兼容旧的单个 `path`） |
+| GET | `/api/ssh/:id/cwd` | 该 SSH 会话的 shell 当前目录（`{"cwd":"…","known":true}`，SFTP 面板据此定位） |
 | GET/POST | `/api/tunnels` | 隧道列表 / 新建（`connection_id`、`remote_host`、`remote_port`） |
 | DELETE | `/api/tunnels/:id` | 关闭隧道 |
 | GET | `/api/rdp-drive/list?path=` | 列出 RDP 共享盘（guacd `drive-path`）目录 |
@@ -626,6 +630,8 @@ data/
 **隧道端口访问不到**：确认宿主机端口已映射（`docker port remote-connect-manager` 应包含 20000-20010），并检查目标端口在远端是否监听（如 `ss -lntp`）；隧道只转发 TCP。
 
 **SFTP 面板打不开或报权限错误**：SFTP 用的是连接配置里的同一账号与密钥；确认该账号有目标目录权限，且远端 sshd 未禁用 sftp 子系统（`Subsystem sftp ...`）。
+
+**SFTP 打开后不是我 shell 里的那个目录**：路径跟踪只在能看到输入时生效——`cd -`、`pushd`、`tmux`/`screen` 内切换、脚本里 `cd` 都无法推断，会回落到家目录；直接在路径栏输入目标路径即可。多标签页同时连同一台机器时以最后一次 `cd` 为准。
 
 **「同步到本地」没反应 / 文件拖不出去**：两者依赖 Chromium 专有 API（File System Access、`DownloadURL`），Firefox 与 Safari 不支持，且页面必须通过 HTTPS 或 localhost 打开。拖出一次只能带一个文件，文件夹请用「同步到本地」。
 

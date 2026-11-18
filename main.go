@@ -84,6 +84,8 @@ func main() {
 		api.POST("/sftp/:id/upload", sftpx.Upload)
 		api.POST("/sftp/:id/mkdir", sftpx.Mkdir)
 		api.POST("/sftp/:id/remove", sftpx.Remove)
+		// SSH 会话当前目录（供 SFTP 面板打开时对齐）
+		api.GET("/ssh/:id/cwd", ssh.Cwd)
 
 		// SSH 本地端口转发
 		api.GET("/tunnels", tunnel.List)
