@@ -10,7 +10,7 @@
 
 ## 快速开始（Docker）
 
-镜像已发布在 Docker Hub（`linux/amd64`，`latest` / `20261118` 两个 tag，同一 digest `sha256:a2401e22…`），一条命令拉起（RDP / Telnet 另需 `guacd`，见「Docker 构建」）：
+镜像已发布在 Docker Hub（`linux/amd64`，`latest` / `20261118` 两个 tag，同一 digest `sha256:6a7c9611…`），一条命令拉起（RDP / Telnet 另需 `guacd`，见「Docker 构建」）：
 
 ```bash
 docker run -d --name remote-connect-manager \
@@ -390,7 +390,7 @@ HTTPS_PROXY=socks5://127.0.0.1:1081 \
 - 推之前先确认凭据：`crane auth login docker.io -u hktalent`（或沿用 Docker Desktop 已登录的 `~/.docker/config.json`）；可用 `docker-credential-desktop list` 确认 docker.io 条目是否真的存在。
 - 只验通链路不看凭据时，`curl --socks5-hostname 127.0.0.1:1081 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/` 返回 `401` 即说明出口可用。
 
-已发布到 Docker Hub（`linux/amd64`，digest `sha256:a2401e22…`），可直接拉取运行：
+已发布到 Docker Hub（`linux/amd64`，digest `sha256:6a7c9611…`），可直接拉取运行：
 
 ```bash
 docker pull hktalent/remote-connect-manager:latest          # 或 :20261118
