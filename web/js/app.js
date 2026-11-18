@@ -58,6 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') loadSftp(e.target.value.trim() || '/');
   });
   document.getElementById('tunnel-form').addEventListener('submit', createTunnel);
+  document.querySelectorAll('input[name="tunnel_mode"]').forEach((el) => {
+    el.addEventListener('change', () => toggleTunnelMode());
+  });
   document.getElementById('drive-refresh').addEventListener('click', () => loadDrive(driveCurrent));
   document.getElementById('drive-up').addEventListener('click', () => {
     if (!driveCurrent) return;
@@ -1916,11 +1919,20 @@ async function loadTunnels() {
       box.innerHTML = '<div class="hint">暂无隧道</div>';
       return;
     }
-    box.innerHTML = list.map((t) => `
+    box.innerHTML = list.map((t) => {
+      const mode = t.mode === 'remote' ? '反向' : '正向';
+      const from = t.mode === 'remote'
+        ? `<code>${escapeHTML(t.connection_name)}:${t.listen_port}</code>`
+        : `<code>localhost:${t.listen_port}</code>`;
+      const to = t.mode === 'remote'
+        ? `本机 <code>${escapeHTML(t.target_host)}:${t.target_port}</code>`
+        : `<code>${escapeHTML(t.target_host)}:${t.target_port}</code>`;
+      return `
       <div class="tunnel-item">
-        <span>${escapeHTML(t.connection_name)} → <code>localhost:${t.local_port}</code> → ${escapeHTML(t.remote_host)}:${t.remote_port}</span>
+        <span><em class="tunnel-tag">${mode}</em> ${from} → ${to}</span>
         <button data-tunnel="${escapeHTML(t.id)}" title="删除">✕</button>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     box.querySelectorAll('[data-tunnel]').forEach((el) => {
       el.addEventListener('click', () => deleteTunnel(el.dataset.tunnel));
     });
@@ -1929,25 +1941,59 @@ async function loadTunnels() {
   }
 }
 
+function tunnelMode() {
+  const el = document.querySelector('input[name="tunnel_mode"]:checked');
+  return el ? el.value : 'local';
+}
+
+function toggleTunnelMode() {
+  const remote = tunnelMode() === 'remote';
+  document.getElementById('tunnel-local-fields').classList.toggle('hidden', remote);
+  document.getElementById('tunnel-remote-fields').classList.toggle('hidden', !remote);
+}
+
 async function createTunnel(e) {
   e.preventDefault();
   if (!tunnelConn) return;
   const form = e.target;
-  const host = form.remote_host.value.trim();
-  const port = parseInt(form.remote_port.value);
-  if (!port) return;
+  const mode = tunnelMode();
+  let body = { connection_id: tunnelConn.id, mode };
+  if (mode === 'remote') {
+    const listenPort = parseInt(form.listen_port.value);
+    const localPort = parseInt(form.local_port.value);
+    if (!listenPort || !localPort) {
+      alert('反向转发需要填写「远端监听端口」和「本机服务端口」');
+      return;
+    }
+    body.listen_port = listenPort;
+    body.listen_host = form.listen_host.value.trim() || '127.0.0.1';
+    body.local_host = form.local_host.value.trim() || '127.0.0.1';
+    body.local_port = localPort;
+  } else {
+    const targetPort = parseInt(form.remote_port.value);
+    if (!targetPort) {
+      alert('正向转发需要填写「远端目标端口」（例如 MySQL 就是 3306）');
+      return;
+    }
+    body.remote_host = form.remote_host.value.trim() || '127.0.0.1';
+    body.remote_port = targetPort;
+  }
   const res = await fetch('/api/tunnels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ connection_id: tunnelConn.id, remote_host: host, remote_port: port }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) {
     alert('创建失败：' + (data.error || res.statusText));
     return;
   }
-  form.remote_host.value = '';
-  form.remote_port.value = '';
+  if (mode === 'remote') {
+    form.listen_port.value = '';
+    form.local_port.value = '';
+  } else {
+    form.remote_port.value = '';
+  }
   loadTunnels();
 }
 

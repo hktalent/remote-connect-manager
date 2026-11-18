@@ -55,8 +55,14 @@ docker run -d --name remote-connect-manager \
 - **打开即定位到当前目录**：面板打开时会向后端取该 SSH 会话的 shell 当前目录（后端从终端输入里的 `cd` 解析，起点是远端 `$HOME`），直接列在那里，不用再手输路径；会话里还没切过目录、或用了 `cd -` / `pushd` / `tmux` 等无法推断的情况，回落到家目录，鼠标点路径栏输入即可。
 - **批量选择与删除**：每行行首复选框 + 表头全选（支持半选态），选中后工具栏出现「删除选中 (n)」，一次删除多个文件/目录；目录按递归删除（非空目录也能一次删掉）。
 - **异步删除、界面不闪烁**：删除采用异步提交，成功后只把对应行从列表里摘掉，**不整表重绘**，因此没有闪烁、滚动位置和当前路径都不变，空目录时才切到「空目录」提示；批量里个别项失败不影响其余项，失败行标红、悬停文件名可看失败原因。
-- **SSH 端口转发**：SSH 会话工具栏点「⇄」，填目标主机（默认 `127.0.0.1`）和目标端口，即可创建一条本地转发；界面显示 `localhost:<本地端口>` 访问地址，支持随时删除。
-- 转发端口取自 `TUNNEL_PORT_BASE`~`TUNNEL_PORT_MAX`（默认 20000-20010），Docker 已把该区间映射到宿主机，因此在宿主机用 `localhost:20000` 即可访问远端内网服务（MySQL、Redis、内部 Web 等）。
+- **SSH 端口转发**：SSH 会话工具栏点「⇄」，弹窗内先选方向：
+  - **正向（本地转发，等价 `ssh -L`）**：在**你本机/容器**开一个端口，流量经 SSH 送到**跳板机侧**的目标。例：目标 `127.0.0.1:3306`（MySQL）→ 宿主机访问 `localhost:20000` 即连到远端 MySQL。
+    `ssh -L 20000:127.0.0.1:3306 user@跳板机`
+  - **反向（远端转发，等价 `ssh -R`）**：在**跳板机**上开一个端口，流量经 SSH 回到**你本机/容器**的服务。例：远端监听 `8080`、本机目标 `127.0.0.1:3000` → 在跳板机上访问 `localhost:8080` 即到你本机 3000 端口。
+    `ssh -R 8080:127.0.0.1:3000 user@跳板机`
+  - 反向的远端端口由你指定；需要远端 sshd `AllowTcpForwarding yes`，若要让跳板机之外的机器访问还需 `GatewayPorts yes` 且监听地址填 `0.0.0.0`。
+- 路由：`POST /api/tunnels`（`{connection_id, mode:"local"|"remote", remote_host, remote_port}` 或 `{..., listen_host, listen_port, local_host, local_port}`）、`GET /api/tunnels`、`DELETE /api/tunnels/:id`。
+- 正向的本地端口取自 `TUNNEL_PORT_BASE`~`TUNNEL_PORT_MAX`（默认 20000-20010），Docker 已把该区间映射到宿主机，因此在宿主机用 `localhost:20000` 即可访问远端内网服务（MySQL、Redis、内部 Web 等）。
 - 隧道随进程生命周期存在，重启应用后需重新创建；连接断开时会自动释放端口。
 - **粘贴 / 拖拽上传（仅 SSH）**：把文件或文件夹从 Finder / 资源管理器拖进 SSH 会话窗口，或复制后在会话里按 `Cmd+V` / `Ctrl+V`，文件会直接落到远端当前目录，右下角浮层显示逐个上传的进度、成功数与失败原因。
   - 目标目录：文件面板（「🗂」）打开时用它的当前目录，否则用该账号的 home（`pwd` 语义，即 SFTP 的初始目录）。
@@ -285,7 +291,7 @@ remote-connect-manager/
 │   ├── keys/                   # 密钥库：扫描、生成、导入、编辑、加载签名器
 │   ├── ssh/                    # SSH WebSocket + PTY 透传
 │   ├── sftp/                   # SFTP 文件管理 API（列表 / 上传 / 下载 / 建目录 / 删除）
-│   ├── tunnel/                 # SSH 端口转发（本地监听 → 远端目标）
+│   ├── tunnel/                 # SSH 端口转发（正向 ssh -L / 反向 ssh -R）
 │   ├── vnc/                    # VNC WebSocket 裸转发
 │   ├── rdp/                    # RDP / Telnet：guacd 握手与双向透传
 │   ├── rdpdrive/               # RDP 共享盘浏览与下载 API

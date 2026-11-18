@@ -180,7 +180,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  /* 高于会话窗口(200)与上传浮层(3000/3100)，保证任何弹窗都在最上层 */
+  z-index: 4000;
 }
 .modal.hidden { display: none; }
 
@@ -643,7 +644,33 @@ body {
 .sftp-empty.loading::after { content: '▁▂▃▄▅▆▇'; animation: rcm-pulse 1.1s ease-in-out infinite; margin-left: 6px; }
 
 /* SSH 端口转发 */
-.tunnel-modal { max-width: 640px; width: 92vw; }
+.tunnel-modal { max-width: 760px; width: 94vw; }
+.tunnel-modes { display: flex; gap: 16px; margin-bottom: 10px; font-size: 13px; }
+.tunnel-mode { display: flex; align-items: center; gap: 6px; cursor: pointer; color: #c9d3e6; }
+.tunnel-fields { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.tunnel-fields input { flex: 1; min-width: 170px; }
+.tunnel-help {
+  background: #141a26;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: #9aa7bd;
+}
+.tunnel-help p { margin: 6px 0; }
+.tunnel-help strong { color: #cfe0ff; }
+.tunnel-help code { color: #7fb2ff; }
+.tunnel-tag {
+  font-style: normal;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #2a3040;
+  color: #cfe0ff;
+  font-size: 11px;
+  margin-right: 6px;
+}
 .tunnel-form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .tunnel-form input {
   background: #0f1419;
@@ -971,7 +998,8 @@ body {
   position: fixed;
   inset: 0;
   background: #000;
-  z-index: 2500;
+  /* 从「网络监听」弹窗里打开，需压在其上 */
+  z-index: 4500;
   display: flex;
   flex-direction: column;
 }

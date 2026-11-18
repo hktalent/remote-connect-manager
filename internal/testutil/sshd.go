@@ -119,7 +119,7 @@ func serveConn(nc net.Conn, cfg *ssh.ServerConfig, onSession SessionHandler) {
 		return
 	}
 	defer sconn.Close()
-	go ssh.DiscardRequests(reqs)
+	go handleGlobalRequests(sconn, reqs)
 
 	for newCh := range chans {
 		switch newCh.ChannelType() {
@@ -222,4 +222,69 @@ func RegisterConnection(t *testing.T, srv *Server) string {
 		t.Fatalf("init config: %v", err)
 	}
 	return id
+}
+
+// handleGlobalRequests 处理全局请求：支持 tcpip-forward（反向/远端转发）测试。
+func handleGlobalRequests(sconn *ssh.ServerConn, reqs <-chan *ssh.Request) {
+	for req := range reqs {
+		switch req.Type {
+		case "tcpip-forward":
+			var p struct {
+				Addr string
+				Port uint32
+			}
+			if err := ssh.Unmarshal(req.Payload, &p); err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			ln, err := net.Listen("tcp", net.JoinHostPort(p.Addr, strconv.Itoa(int(p.Port))))
+			if err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			actual := uint32(ln.Addr().(*net.TCPAddr).Port)
+			if err := req.Reply(true, ssh.Marshal(struct{ Port uint32 }{actual})); err != nil {
+				ln.Close()
+				continue
+			}
+			go acceptForwarded(sconn, ln, p.Addr, actual)
+		case "cancel-tcpip-forward":
+			req.Reply(true, nil)
+		default:
+			req.Reply(false, nil)
+		}
+	}
+}
+
+// acceptForwarded 把远端监听上的连接通过 forwarded-tcpip 通道交回客户端。
+func acceptForwarded(sconn *ssh.ServerConn, ln net.Listener, addr string, port uint32) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		origin := c.RemoteAddr().(*net.TCPAddr)
+		payload := ssh.Marshal(struct {
+			Addr       string
+			Port       uint32
+			OriginAddr string
+			OriginPort uint32
+		}{addr, port, origin.IP.String(), uint32(origin.Port)})
+		ch, chReqs, err := sconn.OpenChannel("forwarded-tcpip", payload)
+		if err != nil {
+			c.Close()
+			continue
+		}
+		go ssh.DiscardRequests(chReqs)
+		go pipeBoth(ch, c)
+	}
+}
+
+func pipeBoth(a ssh.Channel, b net.Conn) {
+	defer a.Close()
+	defer b.Close()
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(a, b); done <- struct{}{} }()
+	go func() { io.Copy(b, a); done <- struct{}{} }()
+	<-done
 }

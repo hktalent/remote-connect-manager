@@ -242,12 +242,30 @@
       <button class="close-btn" onclick="closeTunnelModal()">&times;</button>
     </div>
     <div class="modal-body">
+      <div class="tunnel-modes">
+        <label class="tunnel-mode"><input type="radio" name="tunnel_mode" value="local" checked> 正向（本地转发）</label>
+        <label class="tunnel-mode"><input type="radio" name="tunnel_mode" value="remote"> 反向（远端转发）</label>
+      </div>
       <form id="tunnel-form" class="tunnel-form">
-        <input name="remote_host" placeholder="目标主机（默认 127.0.0.1）" spellcheck="false">
-        <input name="remote_port" type="number" min="1" max="65535" placeholder="目标端口" required>
+        <div class="tunnel-fields" id="tunnel-local-fields">
+          <input name="remote_host" placeholder="远端目标主机（默认 127.0.0.1）" spellcheck="false">
+          <input name="remote_port" type="number" min="1" max="65535" placeholder="远端目标端口（如 3306）">
+        </div>
+        <div class="tunnel-fields hidden" id="tunnel-remote-fields">
+          <input name="listen_port" type="number" min="1" max="65535" placeholder="远端监听端口（如 8080）">
+          <input name="listen_host" placeholder="远端监听地址（默认 127.0.0.1，对外填 0.0.0.0）" spellcheck="false">
+          <input name="local_host" placeholder="本机目标主机（默认 127.0.0.1）" spellcheck="false">
+          <input name="local_port" type="number" min="1" max="65535" placeholder="本机服务端口（如 3000）">
+        </div>
         <button type="submit" class="btn-primary">创建隧道</button>
       </form>
-      <p class="hint">创建后通过 <code>localhost:&lt;本地端口&gt;</code> 访问；Docker 已映射 20000-20010。</p>
+      <div class="tunnel-help">
+        <p><strong>正向（本地 → 远端）</strong>：在<strong>你本机</strong>开一个端口，流量经 SSH 送到<strong>跳板机侧</strong>的目标。等价命令 <code>ssh -L 20000:127.0.0.1:3306 user@跳板机</code>。<br>
+          <span class="hint">例：远端目标填 <code>127.0.0.1</code> + <code>3306</code>（MySQL）→ 本机用 <code>localhost:20000</code> 就连到了它；本地端口从 20000-20010 自动分配，Docker 已映射。</span></p>
+        <p><strong>反向（远端 → 本机）</strong>：在<strong>跳板机</strong>上开一个端口，流量经 SSH 回到<strong>你本机</strong>正在跑的服务。等价命令 <code>ssh -R 8080:127.0.0.1:3000 user@跳板机</code>。<br>
+          <span class="hint">例：远端监听 <code>8080</code>、本机目标 <code>127.0.0.1:3000</code> → 在跳板机上访问 <code>localhost:8080</code> 就到你本机的 3000 端口。</span></p>
+        <p class="hint">反向需远端 sshd 开启 <code>AllowTcpForwarding</code>；要让跳板机以外的机器也能访问，还需 <code>GatewayPorts yes</code>，并把远端监听地址填 <code>0.0.0.0</code>。</p>
+      </div>
       <div id="tunnel-list" class="tunnel-list"></div>
     </div>
   </div>
