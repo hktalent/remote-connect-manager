@@ -7,6 +7,7 @@ COPY vendor ./vendor
 COPY main.go ./
 COPY internal ./internal
 COPY web ./web
+COPY payloads ./payloads
 COPY README.md ./
 RUN CGO_ENABLED=0 GOFLAGS=-mod=vendor go build -o remote-connect-manager .
 
@@ -17,6 +18,7 @@ WORKDIR /app
 
 COPY --from=builder /app/remote-connect-manager /app/remote-connect-manager
 COPY --from=builder /app/web /app/web
+COPY --from=builder /app/payloads /app/payloads
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh /app/remote-connect-manager \
     && mkdir -p /app/data/screenshots /app/data/keys

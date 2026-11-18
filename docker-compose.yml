@@ -7,10 +7,21 @@ services:
       - "8088:8080"
       # SSH 端口转发：容器内 20000-20010 映射到宿主机同名端口
       - "20000-20010:20000-20010"
+      # Web Netcat 监听端口示例区间：监听配在这个区间内的端口才能从宿主机直接访问，
+      # 需要别的端口时按同样格式继续加
+      - "9000-9010:9000-9010"
+      # 内置 exp 监听：反弹 shell / Redis Rogue / LDAP-JNDI / JNDI CodeBase / RMI
+      - "8888:8888"
+      - "6379:6379"
+      - "1389:1389"
+      - "8090:8090"
+      - "1099:1099"
     environment:
       - PORT=8080
       # RDP 走 guacd 服务
       - GUACD_ADDR=guacd:4822
+      # LDAP/JNDI 种子配置里的 javaCodeBase 主机：目标机能访问到的本机地址（局域网 IP 或域名）
+      - NETCAT_PUBLIC_HOST=${NETCAT_PUBLIC_HOST:-127.0.0.1}
     volumes:
       - ./data:/app/data
       # RDP 共享盘落地目录：与 guacd 共用，供浏览器下载

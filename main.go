@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"remote-connect-manager/internal/config"
 	"remote-connect-manager/internal/keys"
+	"remote-connect-manager/internal/netcat"
 	"remote-connect-manager/internal/rdp"
 	"remote-connect-manager/internal/rdpdrive"
 	"remote-connect-manager/internal/screenshot"
@@ -39,6 +40,10 @@ func main() {
 		log.Printf("init rdp drive dir: %v", err)
 	}
 	keys.Init("./data/keys")
+	// Web Netcat：监听端口配置持久化在 data/netcat.json，payload 在 data/netcat-payloads
+	if err := netcat.Init("./data/netcat.json"); err != nil {
+		log.Fatalf("init netcat: %v", err)
+	}
 	// 启动时自动把 ~/.ssh 下的私钥导入密钥库，供界面选择
 	if imported, skipped, dir := keys.ImportFromSSH(); len(imported) > 0 || len(skipped) > 0 {
 		log.Printf("SSH 密钥扫描 %s: 导入 %d 个 %v, 跳过 %d 个 %v",
@@ -89,6 +94,9 @@ func main() {
 		api.GET("/rdp-drive/list", rdpdrive.List)
 		api.GET("/rdp-drive/download", rdpdrive.Download)
 	}
+
+	// Web Netcat（监听端口 / 反弹 shell / 特征应答）
+	netcat.Register(api, r)
 
 	// WebSocket endpoints
 	r.GET("/ws/ssh/:id", ssh.HandleSSH)
