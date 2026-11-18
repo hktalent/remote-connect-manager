@@ -1353,35 +1353,67 @@ let sftpConn = null;
 let sftpCurrent = '';
 let sftpEntries = [];
 let sftpSelected = new Map(); // path -> dir，批量删除用
+let sftpOpening = false;      // 防止连点：打开流程未结束时忽略重复点击
+
+// 图标按钮的忙碌态：禁用 + 转圈图标 + 提示文案，避免“点了没反应”反复点
+function setSftpBusy(on) {
+  const btn = document.getElementById('btn-sftp');
+  if (!btn) return;
+  btn.disabled = on;
+  btn.classList.toggle('loading', on);
+  btn.textContent = on ? '⏳' : '🗂';
+  btn.title = on ? '正在打开文件管理…' : '文件管理（SFTP）';
+}
 
 async function openSftpModal(conn) {
+  if (sftpOpening) return;
+  sftpOpening = true;
+  setSftpBusy(true);
   sftpConn = conn;
   sftpCurrent = '';
   sftpEntries = [];
   sftpSelected.clear();
   document.getElementById('sftp-title').textContent = `文件管理 - ${conn.name}`;
+  document.getElementById('sftp-path').value = '';
+  // 立刻弹出面板并给出占位提示，后面联网取目录不阻塞用户感知
+  document.getElementById('sftp-list').innerHTML = '<div class="sftp-empty">正在连接远端…</div>';
   document.getElementById('sftp-modal').classList.remove('hidden');
+  const sftpBtn = document.getElementById('btn-sftp');
+  if (sftpBtn) sftpBtn.classList.add('active');
   updateSftpSelUI();
-  // 优先打开该 SSH 会话当前的目录（后端从 cd 命令跟踪），拿不到就用家目录
   let start = '.';
   try {
-    const res = await fetch(`/api/ssh/${conn.id}/cwd`);
-    if (res.ok) {
-      const d = await res.json();
-      if (d && d.cwd) start = d.cwd;
+    // 优先打开该 SSH 会话当前的目录，接口异常 / 超时不拖住面板
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    try {
+      const res = await fetch(`/api/ssh/${conn.id}/cwd`, { signal: ctrl.signal });
+      if (res.ok) {
+        const d = await res.json();
+        if (d && d.cwd) start = d.cwd;
+      }
+    } finally {
+      clearTimeout(timer);
     }
   } catch (e) {}
-  loadSftp(start);
+  try {
+    await loadSftp(start);
+  } finally {
+    sftpOpening = false;
+    setSftpBusy(false);
+  }
 }
 
 function closeSftpModal() {
   document.getElementById('sftp-modal').classList.add('hidden');
+  const btn = document.getElementById('btn-sftp');
+  if (btn) btn.classList.remove('active');
 }
 
 async function loadSftp(p) {
   if (!sftpConn) return;
   const list = document.getElementById('sftp-list');
-  list.innerHTML = '<div class="sftp-empty">加载中…</div>';
+  list.innerHTML = '<div class="sftp-empty loading">正在读取目录…</div>';
   try {
     const res = await fetch(`/api/sftp/${sftpConn.id}/list?path=${encodeURIComponent(p)}`);
     const data = await res.json();
@@ -1614,7 +1646,7 @@ function closeDriveModal() {
 
 async function loadDrive(p) {
   const list = document.getElementById('drive-list');
-  list.innerHTML = '<div class="sftp-empty">加载中…</div>';
+  list.innerHTML = '<div class="sftp-empty loading">正在读取目录…</div>';
   try {
     const res = await fetch(`/api/rdp-drive/list?path=${encodeURIComponent(p || '')}`);
     const data = await res.json();
