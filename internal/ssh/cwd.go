@@ -266,6 +266,10 @@ var promptPathRe = regexp.MustCompile(`\[((?:/|~)[^\[\]\r\n]{0,200})\][^\r\n]{0,
 // promptPathRe2 bash 风格 user@host:/home/kali$ 、user@host:~/work#
 var promptPathRe2 = regexp.MustCompile(`@[^:\r\n]{0,60}:((?:/|~)[^\r\n#$%\s]{0,200})[#$%]`)
 
+// promptPathRe3 精简 shell（alpine ash、部分 busybox）的 host:/path# 风格，
+// 没有 user@ 前缀，例如 busysrv:/etc#、cee9746:/home/kali#
+var promptPathRe3 = regexp.MustCompile(`(?m)^[^\s@:\r\n]{1,64}:((?:/|~)[^\r\n#$%\s]{0,200})[#$%]`)
+
 // scanPromptCwd 从一段终端输出里提取提示符中的目录
 func scanPromptCwd(id string, chunk []byte) {
 	if id == "" || len(chunk) == 0 {
@@ -285,6 +289,8 @@ func scanPromptCwd(id string, chunk []byte) {
 		dir = matches[len(matches)-1][1] // 取最后一个提示符
 	} else if m2 := promptPathRe2.FindAllStringSubmatch(string(tail), -1); len(m2) > 0 {
 		dir = m2[len(m2)-1][1]
+	} else if m3 := promptPathRe3.FindAllStringSubmatch(string(tail), -1); len(m3) > 0 {
+		dir = m3[len(m3)-1][1]
 	}
 	promptMu.Unlock()
 
@@ -324,6 +330,34 @@ func clearPromptCwd(id string) {
 	delete(promptByID, id)
 	delete(promptTail, id)
 	promptMu.Unlock()
+}
+
+// safeRestoreCwd 校验"下次登录要 cd 进去的目录"：必须是绝对路径、无控制字符。
+// 只作为 cd 的参数使用（由 shellQuote 转义），绝不参与任何拼接命令。
+func safeRestoreCwd(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || !strings.HasPrefix(dir, "/") || len(dir) > 1024 {
+		return ""
+	}
+	if strings.ContainsAny(dir, "\r\n\x00") {
+		return ""
+	}
+	return dir
+}
+
+// looksLikePrompt 判断这段输出是否已经出现了 shell 提示符（行尾是 # / $ / % / > 再加空白）
+var promptTailRe = regexp.MustCompile(`[#$%>]\s*$`)
+
+func looksLikePrompt(chunk []byte) bool {
+	clean := ansiRe.ReplaceAllString(string(chunk), "")
+	clean = strings.TrimRight(clean, "\x00")
+	if clean == "" {
+		return false
+	}
+	if len(clean) > 512 {
+		clean = clean[len(clean)-512:]
+	}
+	return promptTailRe.MatchString(clean)
 }
 
 func shellQuote(s string) string {

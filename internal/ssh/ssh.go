@@ -196,9 +196,7 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 
-	// 一律走标准 shell 请求：
-	// 不再用 exec 在目标目录里启动 shell，也绝不往 stdin 推 cd/清屏命令。
-	// 还原目录做的任何"自动执行"都会污染终端、污染远端历史，属于 bug。
+	// 一律走标准 shell 请求（不用 exec 定制启动）；目录还原改成"拿到提示符后再敲一条干净的 cd"
 	if err := session.Shell(); err != nil {
 		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
 		return
@@ -232,6 +230,21 @@ func HandleSSH(c *gin.Context) {
 		}
 	}
 
+	// 自动还原目录：目录来自最后一次权威输出（提示符里的路径 / 用户敲 pwd 的输出），
+	// 登录或重连时在 shell 就绪后以普通输入的方式执行 `cd '<目录>'`。
+	// 只发这一条、且只发一次：不做存在性探测、不清屏、不拼接其他命令。
+	restoreDir := safeRestoreCwd(c.Query("cwd"))
+	if restoreDir == "" {
+		if last, ok := GetLastCwd(id); ok {
+			restoreDir = safeRestoreCwd(last)
+		}
+	}
+	var stdinMu sync.Mutex
+	writeStdin := func(data []byte) {
+		stdinMu.Lock()
+		_, _ = stdin.Write(data)
+		stdinMu.Unlock()
+	}
 	readers.Add(2)
 	go pumpFrom(stdout)
 	go pumpFrom(stderr)
@@ -239,6 +252,24 @@ func HandleSSH(c *gin.Context) {
 		readers.Wait()
 		close(out)
 	}()
+	// 等到"提示符就绪"再敲 cd：横幅/motd 之类先到，若在横幅阶段写入，
+	// 命令回显会插在提示符前面（cd 会显示两遍、顺序错乱）。
+	promptReady := make(chan struct{})
+	var promptOnce sync.Once
+	markPromptReady := func() { promptOnce.Do(func() { close(promptReady) }) }
+	if restoreDir != "" {
+		go func() {
+			select {
+			case <-promptReady:
+			case <-time.After(6 * time.Second): // 提示符不可识别时兜底
+			case <-done:
+				return
+			}
+			writeStdin([]byte("cd " + shellQuote(restoreDir) + "\r"))
+		}()
+	} else {
+		markPromptReady() // 无需还原时不要浪费一个挂起 goroutine
+	}
 
 	// WebSocket 层心跳：代理/反代对空闲连接也有超时，定期 Ping 保活
 	go func() {
@@ -256,6 +287,9 @@ func HandleSSH(c *gin.Context) {
 
 	go func() {
 		for chunk := range out {
+			if restoreDir != "" && looksLikePrompt(chunk) {
+				markPromptReady()
+			}
 			// 顺带从终端输出里识别提示符中的目录（zsh 的 [~] 样式），供 SFTP 对齐
 			scanPromptCwd(id, chunk)
 			if err := ws.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
@@ -286,7 +320,7 @@ func HandleSSH(c *gin.Context) {
 			if dir, changed := tr.feed(data); changed {
 				SetCwd(id, dir)
 			}
-			stdin.Write(data)
+			writeStdin(data)
 		}
 		close(done)
 	}()

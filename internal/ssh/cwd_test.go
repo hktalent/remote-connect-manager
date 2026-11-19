@@ -246,6 +246,36 @@ func TestCwdFromBashPrompt(t *testing.T) {
 	}
 }
 
+// 精简 shell（alpine ash / busybox）的 host:/path# 提示符也要能识别
+func TestCwdFromAshPrompt(t *testing.T) {
+	clearPromptCwd("conn-ash")
+	scanPromptCwd("conn-ash", []byte("cee97460ab81:/etc# "))
+	if dir, ok := GetPromptCwd("conn-ash"); !ok || dir != "/etc" {
+		t.Fatalf("ash 提示符解析失败: %q %v", dir, ok)
+	}
+	clearPromptCwd("conn-ash2")
+	scanPromptCwd("conn-ash2", []byte("busysrv:/home/kali$ "))
+	if dir, _ := GetPromptCwd("conn-ash2"); dir != "/home/kali" {
+		t.Fatalf("ash 提示符解析失败: %q", dir)
+	}
+}
+
+// 还原目录的入参必须是绝对路径且不含控制字符
+func TestSafeRestoreCwd(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/home/kali", "/home/kali"},
+		{"  /etc  ", "/etc"},
+		{"", ""},
+		{"home/kali", ""},
+		{"/etc\nrm -rf /", ""},
+	}
+	for _, c := range cases {
+		if got := safeRestoreCwd(c.in); got != c.want {
+			t.Fatalf("safeRestoreCwd(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // 用户敲 pwd 后，用它的输出校准当前目录（Tab 补全/别名导致 cd 解析不准时靠这个）
 func TestCwdFromPwdOutput(t *testing.T) {
 	connID := "conn-pwd"
