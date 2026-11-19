@@ -162,6 +162,15 @@ func rememberLast(id, dir string) {
 }
 
 // GetLastCwd 返回该连接最后确认的目录（SSH 断开后仍可用，供重连还原）
+// clearLast 清掉某连接的最后目录记忆（测试/清理用）
+func clearLast(id string) {
+	lastLoadOnce.Do(loadLastFromDisk)
+	lastMu.Lock()
+	delete(lastCwdByID, id)
+	lastMu.Unlock()
+	saveLastToDisk()
+}
+
 func GetLastCwd(id string) (string, bool) {
 	lastLoadOnce.Do(loadLastFromDisk)
 	lastMu.RLock()
@@ -261,7 +270,7 @@ func clearPendingPwd(id string) {
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)")
 
 // promptPathRe 提示符里的目录，如 [/home/kali]、[~/work]
-var promptPathRe = regexp.MustCompile(`\[((?:/|~)[^\[\]\r\n]{0,200})\][^\r\n]{0,80}[#$%>]`)
+var promptPathRe = regexp.MustCompile(`\[((?:/|~)[^\[\]\r\n]{0,200})\](?:\r?\n)?[^\r\n]{0,80}[#$%>]`)
 
 // promptPathRe2 bash 风格 user@host:/home/kali$ 、user@host:~/work#
 var promptPathRe2 = regexp.MustCompile(`@[^:\r\n]{0,60}:((?:/|~)[^\r\n#$%\s]{0,200})[#$%]`)
@@ -309,10 +318,16 @@ func scanPromptCwd(id string, chunk []byte) {
 	if dir == "" {
 		return
 	}
+	if strings.HasPrefix(dir, "~") {
+		// 提示符显示的是 ~：用登录用户名推断的家目录展开，才能真正"回到那层目录"
+		if home := homeGuess(liveUser(id)); home != "" {
+			dir = path.Join(home, strings.TrimPrefix(strings.TrimPrefix(dir, "~"), "/"))
+		}
+	}
 	promptMu.Lock()
 	promptByID[id] = dir
 	promptMu.Unlock()
-	if !strings.HasPrefix(dir, "~") {
+	if strings.HasPrefix(dir, "/") {
 		rememberLast(id, dir)
 	}
 }

@@ -246,6 +246,31 @@ func TestCwdFromBashPrompt(t *testing.T) {
 	}
 }
 
+// Kali 默认 zsh 的提示符是两行：路径在 [] 里，真正提示符在下一行 └─#
+func TestCwdFromTwoLineZshPrompt(t *testing.T) {
+	clearPromptCwd("conn-zsh2")
+	clearLast("conn-zsh2")
+	registerUser("conn-zsh2", "root")
+	defer unregisterUser("conn-zsh2")
+	// 用户机器上真实形态（括号/换行都可能带颜色控制符）
+	scanPromptCwd("conn-zsh2", []byte("\x1b[?2004h┌──(root㉿lkhjkjjjjjjjkh)-[\x1b[34m/home/kali\x1b[0m]\n\x1b[1;34m└─\x1b[0m# "))
+	if dir, ok := GetPromptCwd("conn-zsh2"); !ok || dir != "/home/kali" {
+		t.Fatalf("两行 zsh 提示符解析失败: %q %v", dir, ok)
+	}
+	if last, ok := GetLastCwd("conn-zsh2"); !ok || last != "/home/kali" {
+		t.Fatalf("最后目录未记住: %q %v", last, ok)
+	}
+	// ~ 形式也要展开成真实路径，否则记忆里是 "~" 无法 cd
+	clearPromptCwd("conn-zsh3")
+	clearLast("conn-zsh3")
+	registerUser("conn-zsh3", "root")
+	defer unregisterUser("conn-zsh3")
+	scanPromptCwd("conn-zsh3", []byte("┌──(root㉿box)-[~/work]\n└─# "))
+	if dir, _ := GetPromptCwd("conn-zsh3"); dir != "/root/work" {
+		t.Fatalf("~ 未展开: %q", dir)
+	}
+}
+
 // 精简 shell（alpine ash / busybox）的 host:/path# 提示符也要能识别
 func TestCwdFromAshPrompt(t *testing.T) {
 	clearPromptCwd("conn-ash")
