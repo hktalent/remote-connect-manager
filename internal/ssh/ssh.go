@@ -191,9 +191,20 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 
-	if err := session.Shell(); err != nil {
-		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
-		return
+	// 重连时带上 ?cwd=，直接在目标目录里拉起 shell，避免先 cd 一次把屏幕刷脏
+	shellStarted := false
+	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
+		// 交互式 shell 从指定目录启动；$SHELL 取登录 shell，没有则退回 /bin/sh
+		cmd := fmt.Sprintf("cd -- %s && exec ${SHELL:-/bin/sh}", shellQuote(dir))
+		if err := session.Start(cmd); err == nil {
+			shellStarted = true
+		}
+	}
+	if !shellStarted {
+		if err := session.Shell(); err != nil {
+			ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
+			return
+		}
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取

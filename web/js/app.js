@@ -1204,44 +1204,63 @@ function startSSHSession(conn, stage) {
   }
 
   // 建立（或重建）SSH 传输层：重连只需要换一条 WebSocket + 一条新的 SSH 会话
-  const connect = () => {
+  const connect = (restoreCwd) => {
     sess.online = null;
     syncConnStatus();
-    ws = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}`);
-    ws.binaryType = 'arraybuffer';
+    const q = restoreCwd ? `?cwd=${encodeURIComponent(restoreCwd)}` : '';
+    const socket = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}${q}`);
+    ws = socket;
+    socket.binaryType = 'arraybuffer';
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (ws !== socket) return;
       sess.online = true;
       syncConnStatus();
       fit();
       resize();
     };
-    ws.onmessage = (ev) => {
+    socket.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         term.write(ev.data);
       } else {
         term.write(new Uint8Array(ev.data));
       }
     };
-    ws.onclose = () => {
-      if (sess.closed) return;
+    socket.onclose = () => {
+      // 已被新连接取代的旧 socket：忽略它的关闭事件，别把状态写成断开
+      if (sess.closed || ws !== socket) return;
       sess.online = false;
       syncConnStatus();
       term.write('\r\n\x1b[31m[连接已断开，点 ↻ 重连]\x1b[0m\r\n');
       refreshCardBackground(sess);
     };
-    ws.onerror = () => {
-      if (sess.closed) return;
+    socket.onerror = () => {
+      if (sess.closed || ws !== socket) return;
       sess.online = false;
       syncConnStatus();
     };
   };
 
-  sess.reconnect = () => {
+  // 重连：先记住断开前的当前目录，连上后直接在同一个目录里起 shell
+  sess.reconnect = async () => {
+    if (sess.closed) return;
+    term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
+    sess.online = null;
+    syncConnStatus();
+    let cwd = '';
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const res = await fetch(`/api/ssh/${conn.id}/cwd`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const d = await res.json();
+        if (d && typeof d.cwd === 'string' && d.cwd.startsWith('/')) cwd = d.cwd;
+      }
+    } catch (e) {}
     if (sess.closed) return;
     try { if (ws) ws.close(); } catch (e) {}
-    term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
-    connect();
+    connect(cwd);
   };
 
   sess.sendInput = (text) => {

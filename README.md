@@ -53,6 +53,7 @@ docker run -d --name remote-connect-manager \
 
 - 会话头部有状态灯：**连接中…**（黄，脉动）→ **已连接**（绿）→ **已断开**（红）。
 - 断开后终端内会打印 `[连接已断开，点 ↻ 重连]`，同时工具栏出现 **↻** 重连按钮，点一下即用原配置重建 SSH 会话与 WebSocket，终端缓冲保留、命令历史照旧。
+- **重连会还原目录**：点 ↻ 时先取断开前的当前目录（提示符 / `cd` 跟踪 / 远端 `pwd`），重连时把它作为 `?cwd=` 传给后端，后端用 `cd -- '<dir>' && exec $SHELL` 直接在原目录拉起交互式 shell，所以你在 `/home/kali` 断开、重连后仍然在 `/home/kali`，屏幕上不会多出一行 `cd` 回显。
 - 后端每 30s 发一次 SSH `keepalive@openssh.com`，并对 WebSocket 每 30s Ping 一次，避免空闲被 NAT / 防火墙 / `sshd` 的 `ClientAlive*` 判定超时；保活失败会立刻关掉连接，让前端马上变红而不是"假连接"。
 
 ### SFTP 文件管理与端口转发
@@ -624,7 +625,7 @@ data/
 | GET/DELETE | `/api/netcat/sessions`、`/api/netcat/sessions/:id` | 全部会话 / 断开指定会话 |
 | POST | `/api/netcat/sessions/:id/exec` | 在会话里执行命令（`{"cmd":"id"}`） |
 | GET/POST/DELETE | `/api/netcat/payloads`、`/api/netcat/payloads/:name` | 列出 / 上传（multipart `file`）/ 删除 payload 文件 |
-| WS | `/ws/ssh/:id`、`/ws/vnc/:id`、`/ws/guacamole/:id`、`/ws/telnet/:id` | SSH / VNC / RDP / Telnet 会话通道 |
+| WS | `/ws/ssh/:id?cwd=…`、`/ws/vnc/:id`、`/ws/guacamole/:id`、`/ws/telnet/:id` | SSH / VNC / RDP / Telnet 会话通道；SSH 的 `cwd` 可选，重连时在指定目录启动 shell |
 | WS | `/ws/netcat/:sessionId` | 把浏览器终端挂到某条 nc 会话（先回放历史，再双向透传） |
 
 ## 常见问题

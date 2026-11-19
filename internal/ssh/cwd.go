@@ -179,6 +179,18 @@ func resolveDir(client *xssh.Client, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// safeRestoreCwd 校验重连时要还原的目录：必须是绝对路径、无控制字符
+func safeRestoreCwd(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || !strings.HasPrefix(dir, "/") || len(dir) > 1024 {
+		return ""
+	}
+	if strings.ContainsAny(dir, "\r\n\x00") {
+		return ""
+	}
+	return dir
+}
+
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -212,5 +213,29 @@ func TestCwdPrefersPromptOverTracker(t *testing.T) {
 
 	if got := callCwd(t, r, connID); got != "/tmp" {
 		t.Fatalf("cwd 应优先用提示符里的 /tmp, got %q", got)
+	}
+}
+
+func TestSafeRestoreCwd(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/home/kali", "/home/kali"},
+		{"  /tmp/x  ", "/tmp/x"},
+		{"", ""},
+		{"home/kali", ""},
+		{"/tmp/a\nb", ""},
+		{"/tmp/a\rb", ""},
+		{"/tmp/ok; rm -rf /", "/tmp/ok; rm -rf /"}, // 由 shellQuote 负责转义
+	}
+	for _, c := range cases {
+		if got := safeRestoreCwd(c.in); got != c.want {
+			t.Fatalf("safeRestoreCwd(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// 路径里的单引号必须被正确转义，不能拼出第二个命令
+	got := shellQuote("/tmp/it's; rm -rf /tmp/x")
+	for _, bad := range []string{"'/tmp/it's"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("quote leaked: %s", got)
+		}
 	}
 }
