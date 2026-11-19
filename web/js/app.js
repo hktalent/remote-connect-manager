@@ -837,8 +837,9 @@ function pushHistory(id, cmd) {
   const arr = loadHistory(id);
   arr.unshift(cmd);
   saveHistory(id, arr);
-  if (historyConnId === id && !document.getElementById('history-panel').classList.contains('hidden')) {
-    renderHistory();
+  const panel = document.getElementById('history-panel');
+  if (historyConnId === id && panel && !panel.classList.contains('hidden')) {
+    insertHistoryRowTop(cmd);
   }
 }
 
@@ -877,7 +878,7 @@ function readCommandText(term, promptStartY) {
       const part = y === endY
         ? line.translateToString(true, 0, buf.cursorX)
         : line.translateToString(true);
-      text += (y === startY ? '' : '\n') + part;
+      text += (y === promptStartY ? '' : '\n') + part;
     }
     return text;
   } catch (e) {
@@ -980,6 +981,36 @@ function commitHistoryLine(id, st, termLine) {
   pushHistory(id, joined);
 }
 
+// 生成一行历史（列表顶部的行）
+function historyRowHTML(cmd, i) {
+  const oneLine = String(cmd).replace(/\s*\n\s*/g, ' ⏎ ');
+  const badge = String(cmd).includes('\n') ? '<span class="history-badge">多行</span>' : '';
+  return `
+    <div class="history-row" data-i="${i}">
+      <input type="checkbox" class="history-check">
+      ${badge}<code class="history-cmd" title="${escapeHTML(cmd)}">${escapeHTML(oneLine)}</code>
+      <button class="history-del" title="删除这条">✕</button>
+    </div>`;
+}
+
+// 面板已打开时把新命令插到最前面：只动首行和既有行的序号，不整表重绘
+function insertHistoryRowTop(cmd) {
+  const list = document.getElementById('history-list');
+  if (!list) return;
+  const empty = list.querySelector('.history-empty');
+  if (empty) empty.remove();
+  // 既有行整体后移一位（数据集里存的是在数组中的下标）
+  list.querySelectorAll('.history-row').forEach((row) => {
+    row.dataset.i = String(Number(row.dataset.i) + 1);
+  });
+  list.insertAdjacentHTML('afterbegin', historyRowHTML(cmd, 0));
+  // 超过保留上限就把末尾多出来的行摘掉
+  const limit = getHistLimit();
+  const rows = list.querySelectorAll('.history-row');
+  for (let i = rows.length - 1; i >= limit; i--) rows[i].remove();
+  updateHistorySel();
+}
+
 function renderHistory() {
   const panel = document.getElementById('history-panel');
   const list = document.getElementById('history-list');
@@ -991,16 +1022,7 @@ function renderHistory() {
     updateHistorySel();
     return;
   }
-  list.innerHTML = arr.map((cmd, i) => {
-    const oneLine = String(cmd).replace(/\s*\n\s*/g, ' ⏎ ');
-    const badge = String(cmd).includes('\n') ? '<span class="history-badge">多行</span>' : '';
-    return `
-    <div class="history-row" data-i="${i}">
-      <input type="checkbox" class="history-check">
-      ${badge}<code class="history-cmd" title="${escapeHTML(cmd)}">${escapeHTML(oneLine)}</code>
-      <button class="history-del" title="删除这条">✕</button>
-    </div>`;
-  }).join('');
+  list.innerHTML = arr.map((cmd, i) => historyRowHTML(cmd, i)).join('');
   updateHistorySel();
   if (panel) panel.scrollTop = 0;
 }

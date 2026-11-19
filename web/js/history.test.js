@@ -197,3 +197,48 @@ function zshTerm(initialLines) {
   assert(l9[0] === expect9, '换行保留: ' + JSON.stringify(l9[0]));
   assert(l9[0].includes('\n'), '记录中含真实换行');
 })();
+
+// 10) Tab 补全：按键缓冲里只有半截，终端里才是完整命令 → 以终端为准
+(async () => {
+  const term = zshTerm(['└─# ']);
+  const st10 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  ctx.feedHistoryBuffer('c10', st10, 'cd /home/ka', term);
+  term.setLine('└─# cd /home/kali' + ' '.repeat(24));
+  ctx.feedHistoryBuffer('c10', st10, '\r', term);
+  const l10 = ctx.loadHistory('c10');
+  assert(l10.length === 1, '补全命令只记一条');
+  assert(l10[0] === 'cd /home/kali', '记录为完整路径: ' + JSON.stringify(l10[0]));
+})();
+
+// 11) 同一条命令连跑两次，两次都在
+(async () => {
+  const term = zshTerm(['└─# ']);
+  const st11 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  for (let k = 0; k < 2; k++) {
+    ctx.feedHistoryBuffer('c11', st11, 'cd /home/kali', term);
+    term.setLine('└─# cd /home/kali' + ' '.repeat(24));
+    ctx.feedHistoryBuffer('c11', st11, '\r', term);
+    term.setLine('└─# ');
+  }
+  const l11 = ctx.loadHistory('c11');
+  assert(l11.length === 2, '两条都记录: ' + JSON.stringify(l11));
+  assert(l11[0] === 'cd /home/kali' && l11[1] === 'cd /home/kali', '内容一致');
+})();
+
+// 12) 多行字符串：不含提示符、不含补白，行内换行保留
+(async () => {
+  const term = zshTerm(['└─# ']);
+  const st12 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  ctx.feedHistoryBuffer('c12', st12, 'echo "o\\', term);
+  term.setLine('└─# echo "o\\' + ' '.repeat(16));
+  ctx.feedHistoryBuffer('c12', st12, '\r', term);
+  term.pushLine('quote> ');
+  ctx.feedHistoryBuffer('c12', st12, 'k"', term);
+  term.setLine('quote> k"' + ' '.repeat(16));
+  ctx.feedHistoryBuffer('c12', st12, '\r', term);
+
+  const l12 = ctx.loadHistory('c12');
+  assert(l12.length === 1, '多行只一条');
+  assert(l12[0] === 'echo "o\\\nk"', '内容正确: ' + JSON.stringify(l12[0]));
+  assert(!/└─|quote>|  /.test(l12[0]), '不含提示符与补白');
+})();
