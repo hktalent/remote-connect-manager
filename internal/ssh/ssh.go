@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -252,16 +253,36 @@ func HandleSSH(c *gin.Context) {
 		readers.Wait()
 		close(out)
 	}()
-	// 等到"提示符就绪"再敲 cd：横幅/motd 之类先到，若在横幅阶段写入，
-	// 命令回显会插在提示符前面（cd 会显示两遍、顺序错乱）。
+	// 还原必须"立刻"发生，但不能抢在提示符之前（否则 cd 回显会插进横幅里）。
+	// 判定条件三条任一满足即写：① 这段输出已像提示符；② 提示符里的路径已解析出来；
+	// ③ 输出静默 ≥120ms（提示符之后不再有输出）；另有 1.5s 硬兜底，绝不久等。
 	promptReady := make(chan struct{})
 	var promptOnce sync.Once
 	markPromptReady := func() { promptOnce.Do(func() { close(promptReady) }) }
+	var lastChunkAt atomic.Int64 // 最近一次收到输出的 unix nano
+	var gotOutput atomic.Bool
 	if restoreDir != "" {
+		go func() {
+			tick := time.NewTicker(30 * time.Millisecond)
+			defer tick.Stop()
+			hard := time.After(1500 * time.Millisecond)
+			for {
+				select {
+				case <-done:
+					return
+				case <-promptReady:
+				case <-hard:
+					markPromptReady()
+				case <-tick.C:
+					if gotOutput.Load() && time.Since(time.Unix(0, lastChunkAt.Load())) >= 120*time.Millisecond {
+						markPromptReady()
+					}
+				}
+			}
+		}()
 		go func() {
 			select {
 			case <-promptReady:
-			case <-time.After(6 * time.Second): // 提示符不可识别时兜底
 			case <-done:
 				return
 			}
@@ -287,8 +308,15 @@ func HandleSSH(c *gin.Context) {
 
 	go func() {
 		for chunk := range out {
-			if restoreDir != "" && looksLikePrompt(chunk) {
-				markPromptReady()
+			if restoreDir != "" {
+				gotOutput.Store(true)
+				lastChunkAt.Store(time.Now().UnixNano())
+				if looksLikePrompt(chunk) {
+					markPromptReady()
+				}
+				if _, ok := GetPromptCwd(id); ok {
+					markPromptReady()
+				}
 			}
 			// 顺带从终端输出里识别提示符中的目录（zsh 的 [~] 样式），供 SFTP 对齐
 			scanPromptCwd(id, chunk)
