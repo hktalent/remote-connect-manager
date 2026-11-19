@@ -2,9 +2,13 @@ package main
 
 import (
 	"embed"
+	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"remote-connect-manager/internal/config"
@@ -29,19 +33,41 @@ var readmeMD []byte
 var version = "dev"
 
 func main() {
-	log.Printf("remote-connect-manager %s", version)
-	if err := config.InitDB("./data/connections.db"); err != nil {
+	desktop := flag.Bool("desktop", false, "桌面模式：只监听 127.0.0.1 随机端口并自动打开应用窗口")
+	dataFlag := flag.String("data", "", "数据目录（默认 ./data；桌面模式默认用户配置目录）")
+	flag.Parse()
+
+	// 桌面模式在 Windows 上通常是无控制台的 GUI 程序，日志落到数据目录
+	if *desktop {
+		log.Printf("remote-connect-manager %s (desktop)", version)
+	}
+
+	dataDir := *dataFlag
+	if dataDir == "" {
+		if *desktop {
+			dataDir = desktopDataDir()
+		} else {
+			dataDir = "./data"
+		}
+	}
+	if *desktop {
+		setupDesktopLog(dataDir)
+		log.Printf("remote-connect-manager %s (desktop)", version)
+	}
+	log.Printf("数据目录: %s", dataDir)
+
+	if err := config.InitDB(filepath.Join(dataDir, "connections.db")); err != nil {
 		log.Fatalf("init db: %v", err)
 	}
-	if err := screenshot.Init("./data/screenshots"); err != nil {
+	if err := screenshot.Init(filepath.Join(dataDir, "screenshots")); err != nil {
 		log.Fatalf("init screenshot dir: %v", err)
 	}
 	if err := rdpdrive.Ensure(); err != nil {
 		log.Printf("init rdp drive dir: %v", err)
 	}
-	keys.Init("./data/keys")
+	keys.Init(filepath.Join(dataDir, "keys"))
 	// Web Netcat：监听端口配置持久化在 data/netcat.json，payload 在 data/netcat-payloads
-	if err := netcat.Init("./data/netcat.json"); err != nil {
+	if err := netcat.Init(filepath.Join(dataDir, "netcat.json")); err != nil {
 		log.Fatalf("init netcat: %v", err)
 	}
 	// 启动时自动把 ~/.ssh 下的私钥导入密钥库，供界面选择
@@ -108,7 +134,7 @@ func main() {
 	r.GET("/ws/guacamole/:id", rdp.HandleGuacamoleTunnel)
 
 	// Screenshot files
-	r.Static("/screenshots", "./data/screenshots")
+	r.Static("/screenshots", filepath.Join(dataDir, "screenshots"))
 
 	// Frontend
 	r.NoRoute(func(c *gin.Context) {
@@ -141,10 +167,62 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		if *desktop {
+			port = "0" // 随机端口（只绑回环）
+		} else {
+			port = "8080"
+		}
 	}
+
+	if *desktop {
+		// 桌面模式：只监听 127.0.0.1，端口随机；起服务后自动开窗口
+		ln, err := listenLoopback(port)
+		if err != nil {
+			log.Fatal(err)
+		}
+		addr := ln.Addr().(*net.TCPAddr)
+		url := "http://127.0.0.1:" + itoa(addr.Port)
+		log.Printf("桌面模式监听 %s", url)
+		if os.Getenv("RCM_NO_OPEN") == "" {
+			go func() {
+				// 等 HTTP 服务真正开始监听后再拉起窗口
+				waitServerReady(url)
+				openAppWindow(url)
+			}()
+		}
+		if err := r.RunListener(ln); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	log.Printf("Server starting on :%s", port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func itoa(n int) string {
+	// 避免为一行格式化再引一个包
+	const digits = "0123456789"
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	for n > 0 {
+		s = string(digits[n%10]) + s
+		n /= 10
+	}
+	return s
+}
+
+// waitServerReady 轮询等 HTTP 服务可用（最多 3 秒）
+func waitServerReady(url string) {
+	for i := 0; i < 30; i++ {
+		if resp, err := http.Get(url + "/api/connections"); err == nil {
+			resp.Body.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

@@ -5,6 +5,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 COPY vendor ./vendor
 COPY main.go ./
+COPY desktop.go ./
 COPY internal ./internal
 COPY web ./web
 COPY payloads ./payloads

@@ -8,6 +8,23 @@
 
 ![演示](img/demo.jpg)
 
+## 桌面版（macOS / Windows / Linux）
+
+发布页（GitHub Releases）里除了命令行版，还提供**桌面版**：同一个程序加 `--desktop` 参数，
+只监听 `127.0.0.1` 的随机端口，启动后自动用应用窗口（Chrome/Edge `--app`）打开界面，双击即用。
+
+| 平台 | 文件 |
+| --- | --- |
+| macOS Apple Silicon | `remote-connect-manager-desktop_<版本>_darwin_arm64.app.zip` |
+| macOS Intel | `remote-connect-manager-desktop_<版本>_darwin_amd64.app.zip` |
+| Windows x86_64 | `remote-connect-manager-desktop_<版本>_windows_amd64.zip` |
+| Linux x86_64 / arm64 | `remote-connect-manager-desktop_<版本>_linux_{amd64,arm64}.tar.gz` |
+
+- macOS 是**未签名**的 `.app`（没有 Apple 开发者证书）：首次右键「打开」，或 `xattr -dr com.apple.quarantine RemoteConnectManager.app`。
+- 数据目录：桌面版默认用用户配置目录（macOS `~/Library/Application Support/remote-connect-manager`、Windows `%APPDATA%\remote-connect-manager`、Linux `~/.config/remote-connect-manager`），可用 `RCM_DATA_DIR` 覆盖；日志写到 `<数据目录>/desktop.log`（Windows 版是无控制台 exe，日志只能看这个文件）。
+- 源码运行：`go build -o rcm . && ./rcm --desktop`；`RCM_NO_OPEN=1` 只起服务不开窗口（CI / 无图形环境）。
+- **命令行模式与 Docker 完全保留**：不带 `--desktop` 就是原来的服务程序（默认 `:8080`，`PORT` 可改），Dockerfile / docker-compose 用法不变。
+
 ## 快速开始（Docker）
 
 镜像已发布在 Docker Hub（`linux/amd64`，`latest` / `20261118` 两个 tag，同一 digest `sha256:6a7c9611…`），一条命令拉起（RDP / Telnet 另需 `guacd`，见「Docker 构建」）：
@@ -30,6 +47,7 @@ docker run -d --name remote-connect-manager \
 - 后端 Go（Gin + gorilla/websocket），用 `golang.org/x/crypto/ssh` 直连 SSH，用 noVNC 协议代理 VNC，用 Guacamole 协议经 `guacd` 连接 RDP 与 Telnet。
 - 前端纯静态（xterm.js / noVNC / guacamole-common-js），全部依赖本地化到 `web/vendor/`，通过 `embed.FS` 打进二进制，离线可用。
 - 配置与密钥以 JSON 形式落盘到 `data/`，截图存 `data/screenshots/`，直接挂载卷即可迁移备份。
+- 一份代码三种用法：**桌面版**（`--desktop`，自动开应用窗口）、**命令行/服务模式**（默认 `:8080`）、**Docker**（`docker-compose.yml`）。
 
 ## 功能介绍
 

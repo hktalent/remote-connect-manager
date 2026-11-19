@@ -79,9 +79,129 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # ===== 桌面版（macOS / Windows / Linux）=====
+  # 桌面版 = 同一个程序 + --desktop：只监听 127.0.0.1 随机端口、数据放用户配置目录、
+  # 启动后自动用系统浏览器内核以「应用窗口」打开界面（Chrome/Edge --app，缺失退回默认浏览器）。
+  # 纯 Go、无 CGO，三个平台都在 ubuntu runner 上交叉编译。
+  desktop:
+    name: desktop ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    env:
+      VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build desktop binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BIN=remote-connect-manager-desktop
+          EXTRA=""
+          if [ "$GOOS" = "windows" ]; then
+            BIN="${BIN}.exe"
+            EXTRA="-H windowsgui"
+          fi
+          GOFLAGS=-mod=vendor go build -trimpath \
+            -ldflags "-s -w ${EXTRA} -X main.version=${VERSION}" \
+            -o "dist/${BIN}" .
+          ls -lh dist
+
+      - name: Package desktop
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          cd dist
+          BASE="remote-connect-manager-desktop_${VERSION}_${GOOS}_${GOARCH}"
+
+          printf '%s\n' \
+            'remote-connect-manager 桌面版' \
+            '' \
+            '启动：macOS 打开 RemoteConnectManager.app；Windows 双击 exe；Linux 运行 ./remote-connect-manager-desktop' \
+            '行为：只监听 127.0.0.1 的随机端口，并自动用应用窗口（Chrome/Edge --app）打开界面，' \
+            '      没有 Chrome/Edge 时退回系统默认浏览器。' \
+            '数据：用户配置目录（macOS ~/Library/Application Support/remote-connect-manager，' \
+            '      Windows %APPDATA%\\remote-connect-manager，Linux ~/.config/remote-connect-manager），' \
+            '      可用环境变量 RCM_DATA_DIR 覆盖；日志在 <数据目录>/desktop.log' \
+            '命令行/Docker：同一份代码仍是服务程序，运行 ./remote-connect-manager --help；' \
+            '      Docker 部署方式不变，见仓库 docker-compose.yml。' \
+            > README.txt
+
+          case "$GOOS" in
+            darwin)
+              APP="RemoteConnectManager.app"
+              mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+              cp remote-connect-manager-desktop "$APP/Contents/MacOS/RemoteConnectManager"
+              chmod +x "$APP/Contents/MacOS/RemoteConnectManager"
+              printf '%s\n' \
+                '<?xml version="1.0" encoding="UTF-8"?>' \
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+                '<plist version="1.0">' \
+                '<dict>' \
+                '  <key>CFBundleName</key><string>Remote Connect Manager</string>' \
+                '  <key>CFBundleDisplayName</key><string>Remote Connect Manager</string>' \
+                '  <key>CFBundleIdentifier</key><string>io.github.hktalent.remote-connect-manager</string>' \
+                "  <key>CFBundleVersion</key><string>${VERSION}</string>" \
+                "  <key>CFBundleShortVersionString</key><string>${VERSION}</string>" \
+                '  <key>CFBundleExecutable</key><string>RemoteConnectManager</string>' \
+                '  <key>CFBundlePackageType</key><string>APPL</string>' \
+                '  <key>LSMinimumSystemVersion</key><string>10.13</string>' \
+                '  <key>NSHighResolutionCapable</key><true/>' \
+                '</dict>' \
+                '</plist>' \
+                > "$APP/Contents/Info.plist"
+              cp README.txt "$APP/Contents/Resources/README.txt"
+              zip -qry "${BASE}.app.zip" "$APP"
+              rm -rf "$APP" remote-connect-manager-desktop
+              ;;
+            windows)
+              zip -q "${BASE}.zip" remote-connect-manager-desktop.exe README.txt
+              rm -f remote-connect-manager-desktop.exe
+              ;;
+            linux)
+              printf '%s\n' \
+                '[Desktop Entry]' \
+                'Type=Application' \
+                'Name=Remote Connect Manager' \
+                'Comment=Web remote connection console (SSH/SFTP/VNC/RDP/Telnet/Netcat)' \
+                'Exec=remote-connect-manager-desktop --desktop' \
+                'Terminal=false' \
+                'Categories=Network;RemoteAccess;' \
+                > remote-connect-manager.desktop
+              tar -czf "${BASE}.tar.gz" remote-connect-manager-desktop remote-connect-manager.desktop README.txt
+              rm -f remote-connect-manager-desktop remote-connect-manager.desktop
+              ;;
+          esac
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -99,7 +219,21 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            独立二进制（无需 Docker，前端页面已内嵌）：
+            ## 桌面版（双击即用，自动开窗口）
+
+            | 平台 | 文件 |
+            | --- | --- |
+            | macOS Apple Silicon | `remote-connect-manager-desktop_*_darwin_arm64.app.zip` |
+            | macOS Intel | `remote-connect-manager-desktop_*_darwin_amd64.app.zip` |
+            | Windows x86_64 | `remote-connect-manager-desktop_*_windows_amd64.zip` |
+            | Linux x86_64 | `remote-connect-manager-desktop_*_linux_amd64.tar.gz` |
+            | Linux arm64 | `remote-connect-manager-desktop_*_linux_arm64.tar.gz` |
+
+            桌面版只监听 `127.0.0.1` 随机端口，启动后自动用应用窗口（Chrome/Edge `--app`）打开界面；
+            数据在用户配置目录（可用 `RCM_DATA_DIR` 覆盖）。
+            macOS 为未签名 .app，首次请右键「打开」，或 `xattr -dr com.apple.quarantine RemoteConnectManager.app`。
+
+            ## 命令行版（服务模式，配合 Docker / 浏览器访问）
 
             | 平台 | 文件 |
             | --- | --- |
@@ -109,5 +243,6 @@ jobs:
             | macOS Apple Silicon | `remote-connect-manager_*_darwin_arm64.tar.gz` |
             | Windows x86_64 | `remote-connect-manager_*_windows_amd64.zip` |
 
-            运行：解压后执行 `./remote-connect-manager`（Windows 双击 `remote-connect-manager.exe`），默认监听 `:8080`，用 `PORT` 改端口。
+            运行 `./remote-connect-manager`（默认监听 `:8080`，`PORT` 可改），浏览器访问即可；
+            Docker 部署见仓库 `docker-compose.yml`（镜像构建方式不变）。
             SSH / VNC 直接可用；RDP 需要本机或局域网有 `guacd`（`GUACD_ADDR` 指定）。
