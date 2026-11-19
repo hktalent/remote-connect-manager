@@ -56,3 +56,39 @@ ctx.onHistoryLimitChange({ target: { value: '10' } });
 for (let i = 0; i < 20; i++) ctx.pushHistory('c1', 'cmd' + i);
 arr = ctx.loadHistory('c1');
 assert(arr.length === 10, '上限 10 生效, 实际 ' + arr.length);
+
+// 4) Tab 补全 / 方向键回放的命令：以终端实际显示行为准
+function fakeTerm() {
+  let line = '';
+  const api = {
+    buffer: {
+      active: {
+        baseY: 0,
+        cursorY: 0,
+        cursorX: 0,
+        getLine: (y) => (y === 0 ? {
+          translateToString: (trimRight, startCol, endCol) => {
+            const text = line.slice(0, endCol === undefined ? line.length : endCol);
+            return trimRight ? text.replace(/\s+$/, '') : text;
+          },
+        } : null),
+      },
+    },
+    setLine: (text) => { line = text; api.buffer.active.cursorX = text.length; },
+    getLine: () => line,
+  };
+  return api;
+}
+
+(async () => {
+  const term = fakeTerm();
+  term.setLine('kali@kali:~$ ');
+  const st2 = { cur: '', esc: false, prompt: null };
+  // 用户只敲了 "cd /ho"，其余由远端 shell 的 Tab 补全完成
+  ctx.feedHistoryBuffer('c2', st2, 'cd /ho', term);
+  term.setLine('kali@kali:~$ cd /home/kali');
+  ctx.feedHistoryBuffer('c2', st2, '\r', term);
+  await new Promise((r) => setTimeout(r, 120));
+  const list = ctx.loadHistory('c2');
+  assert(list[0] === 'cd /home/kali', '补全后的完整命令被记录: ' + JSON.stringify(list[0]));
+})();

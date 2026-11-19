@@ -812,8 +812,30 @@ function pushHistory(id, cmd) {
   }
 }
 
-// 从终端输入里取出「已提交的命令行」，忽略方向键等 ESC 序列
-function feedHistoryBuffer(id, st, data) {
+// 读取终端当前行（含提示符）到光标位置的文本，用于还原「整条命令」
+function readLineText(term, maxLines = 8) {
+  try {
+    const buf = term.buffer.active;
+    const endY = buf.baseY + buf.cursorY;
+    const startY = Math.max(0, endY - (maxLines - 1));
+    let text = '';
+    for (let y = startY; y <= endY; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      text += y === endY
+        ? line.translateToString(true, 0, buf.cursorX)
+        : line.translateToString(true);
+    }
+    return text;
+  } catch (e) {
+    return '';
+  }
+}
+
+// 从终端输入里取出「已提交的命令行」，忽略方向键等 ESC 序列。
+// 客户端只看得到按键：Tab 补全、方向键回放都由远端 shell 完成，
+// 因此回车后以终端里实际显示的那一行（提示符之后）为准，按键缓冲只作兜底。
+function feedHistoryBuffer(id, st, data, term) {
   for (let i = 0; i < data.length; i++) {
     const ch = data[i];
     if (st.esc) {
@@ -823,15 +845,39 @@ function feedHistoryBuffer(id, st, data) {
     }
     if (ch === '\x1b') { st.esc = true; continue; }
     if (ch === '\r' || ch === '\n') {
-      if (st.cur.trim()) pushHistory(id, st.cur);
-      st.cur = '';
+      commitHistoryLine(id, st, term);
       continue;
     }
     if (ch === '\x7f' || ch === '\b') { st.cur = st.cur.slice(0, -1); continue; }
-    if (ch === '\x03' || ch === '\x15') { st.cur = ''; continue; }
+    if (ch === '\x03' || ch === '\x15') { st.cur = ''; st.prompt = null; continue; }
     if (ch < ' ') continue;
+    if (!st.prompt && term) st.prompt = readLineText(term); // 敲第一个字符前的提示符
     st.cur += ch;
   }
+}
+
+// 提交一条历史：优先取终端可见行（去掉开头记录的提示符），拿不到再用按键缓冲
+function commitHistoryLine(id, st, term) {
+  const typed = st.cur.trim();
+  const prompt = st.prompt || '';
+  st.cur = '';
+  st.prompt = null;
+  if (!typed) return;
+  if (!term || !term.buffer) {
+    pushHistory(id, typed);
+    return;
+  }
+  // 等远端把这一行回显完（Tab 补全的内容只出现在回显里）
+  setTimeout(() => {
+    let full = readLineText(term).trim();
+    if (prompt) {
+      // 取最后一次出现的提示符，兼容命令换行、滚动后前几行残留输出的情况
+      const idx = full.lastIndexOf(prompt);
+      if (idx >= 0) full = full.slice(idx + prompt.length).trim();
+    }
+    // 回显可能被清屏/滚动打断，取更完整的那个
+    pushHistory(id, full && full.length >= typed.length ? full : typed);
+  }, 80);
 }
 
 function renderHistory() {
@@ -1051,9 +1097,9 @@ function startSSHSession(conn, stage) {
   };
 
   // 记录用户敲下的命令（回车提交），供会话头部的「命令历史」面板使用
-  const histBuf = { cur: '', esc: false };
+  const histBuf = { cur: '', esc: false, prompt: null };
   term.onData((data) => {
-    feedHistoryBuffer(conn.id, histBuf, data);
+    feedHistoryBuffer(conn.id, histBuf, data, term);
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   });
 
