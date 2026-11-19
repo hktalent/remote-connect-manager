@@ -809,6 +809,9 @@ async function closeSession() {
     if (path) updateCardBackground(sess.conn.id, path);
   } catch (e) {}
 
+  // 关闭前先让后端把当前目录落一次盘（即使 prompt 不可解析，也能记住跟踪到的 cd 目录）
+  if (sess.conn.type === 'ssh') await fetchLastCwd(sess.conn.id);
+
   sess.closed = true;
   try { sess.close(); } catch (e) {}
   try { sess.stage.remove(); } catch (e) {}

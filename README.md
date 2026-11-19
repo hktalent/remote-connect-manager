@@ -57,7 +57,7 @@ docker run -d --name remote-connect-manager \
   1. **提示符**里的路径——zsh/Kali 的 `┌──(root)-[/home/kali]└─#`、`[~/work]$`，以及 bash 的 `user@host:/home/kali#`（ANSI 颜色先剥离）；
   2. **`pwd` 的输出**——你敲 `pwd` 回车后，下一行绝对路径直接作为当前目录（比解析 `cd` 更可信）；
   3. **输入里的 `cd` 跟踪**——支持绝对/相对/`~`/引号/`&&`、`;` 链式；路径不存在时不会乱跳，会退回上一次确认过的目录。
-  最终都会写进「最后已知目录」，**会话断开后不丢弃**，并且落盘到 `data/cwd.json`，容器重启也还在。下次打开这个连接（登录）或点 ↻ 重连时，前端先取它作为 `?cwd=`，后端统一走标准 shell 请求、起来后立即发 `cd -- '<dir>' 2>/dev/null; clear` —— 你就落在上次的目录上，回显被 `clear` 擦掉。
+  最终都会写进「最后已知目录」，**会话断开后不丢弃**，并且落盘到 `data/cwd.json`，容器重启也还在。下次打开这个连接（登录）或点 ↻ 重连时，前端先取它作为 `?cwd=`，后端统一走标准 shell 请求、起来后立即发 `cd -- '<dir>' 2>/dev/null; printf '\033[3J\033[H\033[2J'`（用 ANSI 清屏，不依赖 `clear` 命令/TERM）—— 你就落在上次的目录上，回显被清屏擦掉。
 - 后端每 30s 发一次 SSH `keepalive@openssh.com`，并对 WebSocket 每 30s Ping 一次，避免空闲被 NAT / 防火墙 / `sshd` 的 `ClientAlive*` 判定超时；保活失败会立刻关掉连接，让前端马上变红而不是"假连接"。
 
 ### SFTP 文件管理与端口转发

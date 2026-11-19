@@ -174,6 +174,7 @@ func HandleSSH(c *gin.Context) {
 		rows = 40
 	}
 
+	_ = session.Setenv("TERM", "xterm-256color")
 	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
 		return
@@ -198,9 +199,10 @@ func HandleSSH(c *gin.Context) {
 		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
 		return
 	}
-	// 重连还原目录：shell 起来后发一条 cd，再用 clear 把这条回显擦掉
+	// 还原目录：shell 起来后发一条 cd，再用 ANSI 清屏把这条回显擦掉
+	// （不用外部 clear：精简系统可能没有，且 TERM 未设置时会报错）
 	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
-		_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s 2>/dev/null; clear\r", shellQuote(dir))))
+		_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s 2>/dev/null; printf '\\033[3J\\033[H\\033[2J'\r", shellQuote(dir))))
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取
@@ -278,9 +280,15 @@ func HandleSSH(c *gin.Context) {
 			}
 			// 用户敲了 pwd：标记一下，用它的输出精确校准当前目录
 			notePwdInput(id, data)
-			// 从输入里解析 cd，同步给 SFTP 面板
+			// 从输入里解析 cd，同步给 SFTP 面板；校验存在的路径同时记入「最后目录」
 			if dir, changed := tr.feed(data); changed {
 				SetCwd(id, dir)
+				if real := resolveExisting(sshClient, dir); real != "" {
+					if real != dir {
+						SetCwd(id, real)
+					}
+					rememberLast(id, real)
+				}
 			}
 			stdin.Write(data)
 		}
