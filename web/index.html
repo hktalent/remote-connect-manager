@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>远程连接管理器</title>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
-<link rel="stylesheet" href="/css/style.css?v=20261119a">
+<link rel="stylesheet" href="/css/style.css?v=20261119b">
 </head>
 <body>
 <div id="app">
@@ -426,7 +426,11 @@
 <div id="session-viewer" class="session-viewer hidden">
   <div class="session-header">
     <span id="session-title"></span>
+    <span id="conn-status" class="conn-status hidden" title="SSH 连接状态">
+      <i class="conn-dot"></i><span id="conn-status-text">连接中…</span>
+    </span>
     <div class="session-controls">
+      <button id="btn-reconnect" title="重新连接（当前连接已断开）" class="hidden">↻</button>
       <button id="btn-history" title="命令历史（最近 200 条，可定义）" class="hidden">🕘</button>
       <button id="btn-upload" title="上传文件到远程共享盘" class="hidden">⇪</button>
       <button id="btn-drive" title="共享盘文件下载" class="hidden">🖴</button>
@@ -486,6 +490,6 @@
   window.Guacamole = Guacamole;
 </script>
 <script src="/js/footer.js?v=20261117a"></script>
-<script src="/js/app.js?v=20261119a"></script>
+<script src="/js/app.js?v=20261119b"></script>
 </body>
 </html>

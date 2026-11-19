@@ -116,6 +116,27 @@ func HandleSSH(c *gin.Context) {
 	registerClient(id, sshClient)
 	defer unregisterClient(id)
 
+	// 链路保活：长时间无输入时，NAT/防火墙/sshd 的 ClientAlive 常把空闲连接掐掉，
+	// 表现为「连着好好的，过一会自己断开」。每 30s 发一次 keepalive 请求，
+	// 失败就主动关掉 WebSocket，让前端立刻显示离线并可一键重连。
+	keepStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepStop:
+				return
+			case <-ticker.C:
+				if _, _, err := sshClient.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+					ws.Close()
+					return
+				}
+			}
+		}
+	}()
+	defer close(keepStop)
+
 	// 追踪交互式 shell 的当前目录（起点为远端的 $HOME），SFTP 面板打开时据此定位
 	tr := &cwdTracker{}
 	if home := homeDir(sshClient); home != "" {
@@ -209,6 +230,20 @@ func HandleSSH(c *gin.Context) {
 	go func() {
 		readers.Wait()
 		close(out)
+	}()
+
+	// WebSocket 层心跳：代理/反代对空闲连接也有超时，定期 Ping 保活
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepStop:
+				return
+			case <-ticker.C:
+				_ = ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+			}
+		}
 	}()
 
 	go func() {

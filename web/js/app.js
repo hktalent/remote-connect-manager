@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-keys').addEventListener('click', openKeysModal);
   document.getElementById('config-form').addEventListener('submit', onSaveConfig);
   document.getElementById('btn-close-session').addEventListener('click', closeSession);
+  document.getElementById('btn-reconnect').addEventListener('click', reconnectActiveSession);
   document.getElementById('btn-minimize').addEventListener('click', minimizeSession);
   document.getElementById('btn-zoom-in').addEventListener('click', () => changeZoom(0.1));
   document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(-0.1));
@@ -627,6 +628,34 @@ function sessionPool() {
   return document.getElementById('session-pool');
 }
 
+// 会话头部的连接状态：仅 SSH 会话显示
+function syncConnStatus() {
+  const wrap = document.getElementById('conn-status');
+  const btn = document.getElementById('btn-reconnect');
+  if (!wrap || !btn) return;
+  const sess = (typeof activeSession === 'function') ? activeSession() : null;
+  if (!sess || sess.conn.type !== 'ssh') {
+    wrap.classList.add('hidden');
+    btn.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  const online = sess.online;
+  const state = online === true ? 'online' : (online === false ? 'offline' : 'connecting');
+  wrap.classList.remove('status-online', 'status-offline', 'status-connecting');
+  wrap.classList.add('status-' + state);
+  document.getElementById('conn-status-text').textContent =
+    state === 'online' ? '已连接' : (state === 'offline' ? '已断开' : '连接中…');
+  // 只有确认断开后才给「重连」按钮，连接中/已连接时隐藏
+  btn.classList.toggle('hidden', state !== 'offline');
+}
+
+function reconnectActiveSession() {
+  const sess = activeSession();
+  if (!sess || typeof sess.reconnect !== 'function') return;
+  sess.reconnect();
+}
+
 function showViewer(sess) {
   document.getElementById('session-title').textContent =
     `${sess.conn.name} (${sess.conn.type.toUpperCase()})`;
@@ -638,6 +667,7 @@ function showViewer(sess) {
   document.getElementById('btn-tunnel').classList.toggle('hidden', type !== 'ssh');
   document.getElementById('btn-history').classList.toggle('hidden', type !== 'ssh');
   hideHistoryPanel();
+  syncConnStatus();
   document.getElementById('session-viewer').classList.remove('hidden');
 }
 
@@ -1111,34 +1141,33 @@ function startSSHSession(conn, stage) {
   });
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}`);
-  ws.binaryType = 'arraybuffer';
+  let ws = null;
 
   const fit = () => { try { fitAddon.fit(); } catch (e) {} };
   const resize = () => {
     let dims = null;
     try { dims = fitAddon.proposeDimensions(); } catch (e) {}
-    if (dims && ws.readyState === WebSocket.OPEN) {
+    if (dims && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
     }
   };
   const onResize = () => { fit(); resize(); };
 
   const sess = {
-    conn, stage, element: termDiv, zoom: 1, timer: null, closed: false,
+    conn, stage, element: termDiv, zoom: 1, timer: null, closed: false, online: null,
     snapshot: () => compositeTerminalCanvas(termDiv),
     refit: onResize,
     getSelection: () => term.getSelection(),
     paste: (text) => {
       try { term.paste(text); } catch (e) {
-        if (ws.readyState === WebSocket.OPEN) ws.send(text);
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
       }
     },
     close: () => {
       sess.closed = true;
       window.removeEventListener('resize', onResize);
       try { ro && ro.disconnect(); } catch (e) {}
-      try { ws.close(); } catch (e) {}
+      try { if (ws) ws.close(); } catch (e) {}
     },
   };
 
@@ -1152,33 +1181,61 @@ function startSSHSession(conn, stage) {
     ro.observe(stage);
   }
 
-  ws.onopen = () => { fit(); resize(); };
-  ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') {
-      term.write(ev.data);
-    } else {
-      term.write(new Uint8Array(ev.data));
-    }
+  // 建立（或重建）SSH 传输层：重连只需要换一条 WebSocket + 一条新的 SSH 会话
+  const connect = () => {
+    sess.online = null;
+    syncConnStatus();
+    ws = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      sess.online = true;
+      syncConnStatus();
+      fit();
+      resize();
+    };
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        term.write(ev.data);
+      } else {
+        term.write(new Uint8Array(ev.data));
+      }
+    };
+    ws.onclose = () => {
+      if (sess.closed) return;
+      sess.online = false;
+      syncConnStatus();
+      term.write('\r\n\x1b[31m[连接已断开，点 ↻ 重连]\x1b[0m\r\n');
+      refreshCardBackground(sess);
+    };
+    ws.onerror = () => {
+      if (sess.closed) return;
+      sess.online = false;
+      syncConnStatus();
+    };
   };
-  ws.onclose = () => {
-    term.write('\r\n\x1b[31m[连接已关闭]\x1b[0m');
-    if (!sess.closed) refreshCardBackground(sess);
+
+  sess.reconnect = () => {
+    if (sess.closed) return;
+    try { if (ws) ws.close(); } catch (e) {}
+    term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
+    connect();
   };
-  ws.onerror = () => term.write('\r\n\x1b[31m[连接错误]\x1b[0m');
 
   sess.sendInput = (text) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(text);
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(text);
   };
 
   // 记录用户敲下的命令（回车提交），供会话头部的「命令历史」面板使用
   const histBuf = { cur: '', esc: false, prompt: null, lines: [], startY: null };
   term.onData((data) => {
     feedHistoryBuffer(conn.id, histBuf, data, term);
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
   });
 
   window.addEventListener('resize', onResize);
   fit();
+  connect();
   return sess;
 }
 

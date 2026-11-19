@@ -49,6 +49,12 @@ docker run -d --name remote-connect-manager \
 - **系统剪贴板粘贴**：在会话里直接按 `Cmd+V`（macOS）/ `Ctrl+V`（Windows、Linux）即可粘贴，无需右键菜单；终端用 bracketed paste，`vim` 等全屏程序也不会错位。
 - **终端复制**：用鼠标选中文本后按 `Cmd+C`（macOS）/ `Ctrl+Shift+C`（Windows、Linux）即可写入系统剪贴板；`Ctrl+C` 仍保留为发送 SIGINT。canvas 渲染的选区不是 DOM 选区，浏览器原生复制无法直接取到，所以由前端接管。VNC / RDP / Telnet 没有可选中的文本层，需要在远端桌面里复制，文本经剪贴板通道自动写回本地。
 
+### 连接状态与重连
+
+- 会话头部有状态灯：**连接中…**（黄，脉动）→ **已连接**（绿）→ **已断开**（红）。
+- 断开后终端内会打印 `[连接已断开，点 ↻ 重连]`，同时工具栏出现 **↻** 重连按钮，点一下即用原配置重建 SSH 会话与 WebSocket，终端缓冲保留、命令历史照旧。
+- 后端每 30s 发一次 SSH `keepalive@openssh.com`，并对 WebSocket 每 30s Ping 一次，避免空闲被 NAT / 防火墙 / `sshd` 的 `ClientAlive*` 判定超时；保活失败会立刻关掉连接，让前端马上变红而不是"假连接"。
+
 ### SFTP 文件管理与端口转发
 
 - **SFTP 文件管理**：SSH 会话工具栏点「🗂」打开面板，可浏览目录、进上级、直接输入路径跳转、下载文件、上传文件、新建目录、删除文件/目录。后端复用同一套密钥/密码认证，按需建立独立 SFTP 连接，用完即断。
@@ -636,6 +642,8 @@ data/
 **Telnet 安全性**：Telnet 无加密，账号密码明文传输，只建议在可信内网或 SSH 隧道内使用。
 
 **隧道端口访问不到**：确认宿主机端口已映射（`docker port remote-connect-manager` 应包含 20000-20010），并检查目标端口在远端是否监听（如 `ss -lntp`）；隧道只转发 TCP。
+
+**SSH 连上后过一会自己断开**：先看状态灯是否变红。服务端已内置 30 秒 keepalive；若仍断开，通常是目标机 `sshd` 的 `ClientAliveInterval`/`ClientAliveCountMax` 太小、或中间有设备做空闲清理（有些云 NAT 60 秒即回收），可在目标机 `/etc/ssh/sshd_config` 里加大 `ClientAliveInterval 60`、`ClientAliveCountMax 6`。断开后点工具栏 **↻** 重连即可，不需要重新建连接。
 
 **SFTP 面板打不开或报权限错误**：SFTP 用的是连接配置里的同一账号与密钥；确认该账号有目标目录权限，且远端 sshd 未禁用 sftp 子系统（`Subsystem sftp ...`）。
 
