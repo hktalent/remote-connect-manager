@@ -800,12 +800,11 @@ function saveHistory(id, arr) {
   } catch (e) {}
 }
 
-// 追加一条命令（相邻重复不重复记录）
+// 追加一条命令：同一命令执行多次也各记一条，方便回看执行顺序
 function pushHistory(id, cmd) {
   cmd = String(cmd || '').trim();
   if (!cmd) return;
   const arr = loadHistory(id);
-  if (arr[0] === cmd) return;
   arr.unshift(cmd);
   saveHistory(id, arr);
   if (historyConnId === id && !document.getElementById('history-panel').classList.contains('hidden')) {

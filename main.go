@@ -132,6 +132,10 @@ func main() {
 		case len(path) > 5 && path[len(path)-4:] == ".svg":
 			ct = "image/svg+xml"
 		}
+		// 前端资源随版本频繁变化，禁用缓存，避免浏览器一直用旧的 app.js
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
 		c.Data(http.StatusOK, ct, data)
 	})
 

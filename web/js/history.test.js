@@ -34,8 +34,9 @@ ctx.pushHistory('c1', 'ls -la');
 ctx.pushHistory('c1', 'ls -la');
 ctx.pushHistory('c1', 'cd /var/log');
 let arr = ctx.loadHistory('c1');
-assert(arr.length === 2, '相邻重复只记一条: ' + JSON.stringify(arr));
+assert(arr.length === 3, '同一命令执行两次各记一条: ' + JSON.stringify(arr));
 assert(arr[0] === 'cd /var/log', '最新命令在最前');
+assert(arr[2] === 'ls -la' && arr[1] === 'ls -la', '重复命令都保留');
 
 // 2) 终端输入解析：回车提交、退格、Ctrl-U、方向键忽略
 const st = { cur: '', esc: false };
