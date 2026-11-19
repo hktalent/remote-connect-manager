@@ -95,7 +95,8 @@ func loadLastFromDisk() {
 	}
 	lastMu.Lock()
 	for k, v := range m {
-		if v != "" {
+		// 历史上被错误回退成根目录的记录直接丢弃，避免重连后跳到 /
+		if v != "" && v != "/" {
 			lastCwdByID[k] = v
 		}
 	}
@@ -121,7 +122,7 @@ func saveLastToDisk() {
 
 // rememberLast 记录该连接最后一次确认的目录（跨会话保留）
 func rememberLast(id, dir string) {
-	if id == "" || dir == "" {
+	if id == "" || dir == "" || dir == "/" {
 		return
 	}
 	lastLoadOnce.Do(loadLastFromDisk)
@@ -198,6 +199,9 @@ func Cwd(c *gin.Context) {
 				// 跟踪到的路径不存在（Tab 补全只记了半截）：退回最后一次确认过的目录
 				SetCwd(id, last)
 				dir = last
+			} else {
+				// 既不存在又没有历史：不要把无效路径当成当前目录
+				dir, known = "", false
 			}
 		}
 	}
@@ -324,14 +328,13 @@ func clearPromptCwd(id string) {
 }
 
 // resolveExisting 逐级向上找一个真实存在的目录，全都不存在返回空串
+// 只认「这个目录本身存在」，绝不再向上回退到父目录/根目录：
+// 回退会把半截路径（Tab 补全只记录到一半）解析成 /，进而把 / 当成当前目录记下来
 func resolveExisting(client *xssh.Client, dir string) string {
-	for i := 0; i < 8 && dir != "" && dir != "/" && dir != "."; i++ {
-		if real := resolveDir(client, dir); real != "" {
-			return real
-		}
-		dir = path.Dir(dir)
+	if dir == "" || dir == "." {
+		return ""
 	}
-	return resolveDir(client, "/")
+	return resolveDir(client, dir)
 }
 
 // resolveDir 在远端把目录转成绝对真实路径，失败返回空串

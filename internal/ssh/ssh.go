@@ -202,7 +202,7 @@ func HandleSSH(c *gin.Context) {
 	// 还原目录：shell 起来后发一条 cd，再用 ANSI 清屏把这条回显擦掉
 	// （不用外部 clear：精简系统可能没有，且 TERM 未设置时会报错）
 	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
-		_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s 2>/dev/null; printf '\\033[3J\\033[H\\033[2J'\r", shellQuote(dir))))
+		_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s 2>/dev/null; printf '\\033[H\\033[2J\\033[3J'\r", shellQuote(dir))))
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取
