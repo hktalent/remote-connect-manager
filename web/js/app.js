@@ -16,6 +16,31 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('config-form').addEventListener('submit', onSaveConfig);
   document.getElementById('btn-close-session').addEventListener('click', closeSession);
   document.getElementById('btn-reconnect').addEventListener('click', reconnectActiveSession);
+
+  // 会话快捷键（捕获阶段处理，终端里也生效，且不再把按键送给远端 shell）：
+  //   Ctrl+R 重连当前 SSH 会话（顺手拦掉浏览器刷新）
+  //   Ctrl+X 关闭当前会话
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    const t = e.target;
+    const inTerm = !!(t && t.closest && t.closest('.xterm'));
+    const tag = ((t && t.tagName) || '').toLowerCase();
+    if (!inTerm && (tag === 'input' || tag === 'textarea' || tag === 'select')) return;
+    const k = (e.key || '').toLowerCase();
+    if (k === 'r') {
+      const s = activeSession();
+      if (!s) return;
+      e.preventDefault(); // 始终拦掉浏览器刷新
+      // 连接还活着时不抢 Ctrl+R：它就是 shell 的「历史反查」，照旧送给终端
+      if (s.online === true) return;
+      e.stopPropagation();
+      reconnectActiveSession();
+    } else if (k === 'x') {
+      if (!activeSession()) return;
+      e.preventDefault(); e.stopPropagation();
+      closeSession();
+    }
+  }, true);
   document.getElementById('btn-minimize').addEventListener('click', minimizeSession);
   document.getElementById('btn-zoom-in').addEventListener('click', () => changeZoom(0.1));
   document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(-0.1));
