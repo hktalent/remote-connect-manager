@@ -427,6 +427,7 @@
   <div class="session-header">
     <span id="session-title"></span>
     <div class="session-controls">
+      <button id="btn-history" title="命令历史（最近 200 条，可定义）" class="hidden">🕘</button>
       <button id="btn-upload" title="上传文件到远程共享盘" class="hidden">⇪</button>
       <button id="btn-drive" title="共享盘文件下载" class="hidden">🖴</button>
       <button id="btn-sftp" title="文件管理（SFTP）" class="hidden">🗂</button>
@@ -437,6 +438,18 @@
       <button id="btn-fullscreen" title="全屏">⛶</button>
       <button id="btn-minimize" title="最小化到卡片">↘</button>
       <button id="btn-close-session" title="关闭" class="danger">✕</button>
+    </div>
+    <div id="history-panel" class="history-panel hidden">
+      <div class="history-head">
+        <span class="history-title">命令历史</span>
+        <label class="history-limit">保留 <input id="history-limit" type="number" min="10" max="2000" step="10" value="200"> 条</label>
+        <label class="history-all"><input type="checkbox" id="history-select-all"> 全选</label>
+        <button id="history-del-sel" class="history-btn" disabled>删除选中</button>
+        <button id="history-clear" class="history-btn danger">清空</button>
+        <button id="history-close" class="history-btn" title="关闭">✕</button>
+      </div>
+      <div id="history-list" class="history-list"></div>
+      <div class="history-hint">单击把命令填进终端（不执行）；Shift+单击直接执行</div>
     </div>
   </div>
   <div id="session-body" class="session-body"></div>

@@ -1,6 +1,15 @@
 package ssh
 
-import "testing"
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"remote-connect-manager/internal/config"
+	"remote-connect-manager/internal/testutil"
+)
 
 func newTracker() *cwdTracker {
 	tr := &cwdTracker{}
@@ -62,8 +71,20 @@ func TestCwdTrackerIgnoresOtherCommands(t *testing.T) {
 	if got := feed(t, tr, "cdrom\r"); got != "/srv" {
 		t.Fatalf("cdrom 不是 cd, got %q", got)
 	}
-	if got := feed(t, tr, "cd -\r"); got != "/srv" {
-		t.Fatalf("cd - 无法推断，应保持不变, got %q", got)
+	if got := feed(t, tr, "cd -\r"); got != "/home/u" {
+		t.Fatalf("cd - 应回到上一个目录 /home/u, got %q", got)
+	}
+}
+
+// 方向键 / 历史回溯是 ESC 序列，不能污染命令行缓冲
+func TestCwdTrackerIgnoresArrowKeys(t *testing.T) {
+	tr := newTracker()
+	feed(t, tr, "cd /srv\r")
+	if got := feed(t, tr, "\x1b[A\x1b[A\r"); got != "/srv" {
+		t.Fatalf("方向键不应改变目录, got %q", got)
+	}
+	if got := feed(t, tr, "cd /opt\r"); got != "/opt" {
+		t.Fatalf("方向键后正常输入 cd /opt -> %q", got)
 	}
 }
 
@@ -97,4 +118,51 @@ func TestCwdTrackerAbsoluteWithoutBase(t *testing.T) {
 	if got := feed(t, tr2, "cd sub\r"); got != "" {
 		t.Fatalf("未知基准时相对路径不应生效, got %q", got)
 	}
+}
+
+// /api/ssh/:id/cwd 会用远端 `pwd -P` 校正追踪到的目录
+func TestCwdResolvesRemotePath(t *testing.T) {
+	srv := testutil.StartSSH(t, nil)
+	connID := testutil.RegisterConnection(t, srv)
+	conn, err := config.GetConnectionByID(connID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := Dial(conn)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	registerClient(connID, client)
+	defer unregisterClient(connID)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/ssh/:id/cwd", Cwd)
+
+	SetCwd(connID, "/tmp")
+	if got := callCwd(t, r, connID); got != "/tmp" {
+		t.Fatalf("cwd = %q, want /tmp", got)
+	}
+
+	// 目录已不存在时应回退到仍存在的父目录
+	SetCwd(connID, "/tmp/rcm-not-exist-xyz")
+	if got := callCwd(t, r, connID); got != "/tmp" {
+		t.Fatalf("不存在的目录应回退到 /tmp, got %q", got)
+	}
+}
+
+func callCwd(t *testing.T, r *gin.Engine, id string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/ssh/"+id+"/cwd", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	var resp struct {
+		Cwd   string `json:"cwd"`
+		Known bool   `json:"known"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	return resp.Cwd
 }

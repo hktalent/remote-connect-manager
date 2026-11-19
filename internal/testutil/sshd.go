@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -131,8 +132,7 @@ func serveConn(nc net.Conn, cfg *ssh.ServerConfig, onSession SessionHandler) {
 			if onSession != nil {
 				go onSession(ch, chReqs)
 			} else {
-				go ssh.DiscardRequests(chReqs)
-				ch.Close()
+				go serveExec(ch, chReqs)
 			}
 		case "direct-tcpip":
 			ch, chReqs, err := newCh.Accept()
@@ -287,4 +287,39 @@ func pipeBoth(a ssh.Channel, b net.Conn) {
 	go func() { io.Copy(a, b); done <- struct{}{} }()
 	go func() { io.Copy(b, a); done <- struct{}{} }()
 	<-done
+}
+
+// serveExec 在测试服务端执行 exec 请求（本地 sh），用于验证远端 pwd 之类的命令
+func serveExec(ch ssh.Channel, reqs <-chan *ssh.Request) {
+	deferredClose := true
+	defer func() {
+		if deferredClose {
+			ch.Close()
+		}
+	}()
+	for req := range reqs {
+		switch req.Type {
+		case "exec":
+			var p struct{ Cmd string }
+			if err := ssh.Unmarshal(req.Payload, &p); err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			cmd := exec.Command("/bin/sh", "-c", p.Cmd)
+			cmd.Stdout = ch
+			cmd.Stderr = ch.Stderr()
+			_ = cmd.Run()
+			ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+			ch.CloseWrite()
+			return
+		case "shell":
+			req.Reply(true, nil)
+		case "pty-req", "env", "window-change", "signal":
+			req.Reply(true, nil)
+		default:
+			req.Reply(false, nil)
+		}
+	}
+	deferredClose = false
 }

@@ -3,6 +3,7 @@
 package ssh
 
 import (
+	"fmt"
 	"net/http"
 	"path"
 	"strings"
@@ -15,7 +16,33 @@ import (
 var (
 	cwdMu   sync.RWMutex
 	cwdByID = map[string]string{}
+
+	clientMu sync.RWMutex
+	clients  = map[string]*xssh.Client{}
 )
+
+// registerClient 记录连接对应的 SSH 客户端，供 /cwd 接口在远端执行 pwd 校验
+func registerClient(id string, client *xssh.Client) {
+	if id == "" || client == nil {
+		return
+	}
+	clientMu.Lock()
+	clients[id] = client
+	clientMu.Unlock()
+}
+
+func unregisterClient(id string) {
+	clientMu.Lock()
+	delete(clients, id)
+	clientMu.Unlock()
+}
+
+func liveClient(id string) *xssh.Client {
+	clientMu.RLock()
+	c := clients[id]
+	clientMu.RUnlock()
+	return c
+}
 
 // SetCwd 记录某条连接当前目录
 func SetCwd(id, dir string) {
@@ -43,8 +70,53 @@ func clearCwd(id string) {
 
 // Cwd 返回该连接 shell 的当前目录（尽力而为：未建立过会话时 known=false）
 func Cwd(c *gin.Context) {
-	dir, known := GetCwd(c.Param("id"))
+	id := c.Param("id")
+	dir, known := GetCwd(id)
+	client := liveClient(id)
+	if client != nil {
+		if dir == "" {
+			if home := homeDir(client); home != "" {
+				dir, known = home, true
+			}
+		}
+		// 交给远端执行 `cd <dir> && pwd -P`：拿到真实路径（解析 ~ / .. / 软链接）
+		if dir != "" {
+			if real := resolveExisting(client, dir); real != "" && real != dir {
+				SetCwd(id, real)
+				dir = real
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"cwd": dir, "known": known})
+}
+
+// resolveExisting 逐级向上找一个真实存在的目录，全都不存在返回空串
+func resolveExisting(client *xssh.Client, dir string) string {
+	for i := 0; i < 8 && dir != "" && dir != "/" && dir != "."; i++ {
+		if real := resolveDir(client, dir); real != "" {
+			return real
+		}
+		dir = path.Dir(dir)
+	}
+	return resolveDir(client, "/")
+}
+
+// resolveDir 在远端把目录转成绝对真实路径，失败返回空串
+func resolveDir(client *xssh.Client, dir string) string {
+	s, err := client.NewSession()
+	if err != nil {
+		return ""
+	}
+	defer s.Close()
+	out, err := s.Output(fmt.Sprintf("cd -- %s 2>/dev/null && pwd", shellQuote(dir)))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // homeDir 通过一次 exec 取远端 $HOME，作为目录追踪的起点
@@ -66,7 +138,9 @@ type cwdTracker struct {
 	mu   sync.Mutex
 	buf  []byte
 	cwd  string
+	prev string
 	home string
+	esc  bool // 正在吞掉 ESC/CSI 转义序列
 }
 
 func (t *cwdTracker) seed(home string) {
@@ -88,6 +162,17 @@ func (t *cwdTracker) feed(data []byte) (string, bool) {
 	defer t.mu.Unlock()
 	changed := false
 	for _, b := range data {
+		// 方向键 / 历史回溯等转义序列里的字符不是真实输入，不能计入命令行
+		if t.esc {
+			if b >= 0x40 && b <= 0x7e && b != '[' && b != 'O' {
+				t.esc = false
+			}
+			continue
+		}
+		if b == 0x1b {
+			t.esc = true
+			continue
+		}
 		switch b {
 		case 0x03, 0x15: // Ctrl-C / Ctrl-U 丢弃当前行
 			t.buf = t.buf[:0]
@@ -97,6 +182,7 @@ func (t *cwdTracker) feed(data []byte) (string, bool) {
 			}
 		case '\r', '\n':
 			if d, ok := t.applyLine(string(t.buf)); ok {
+				t.prev = t.cwd
 				t.cwd = d
 				changed = true
 			}
@@ -148,7 +234,10 @@ func (t *cwdTracker) parseCd(cmd string) (string, bool) {
 		return t.home, true
 	}
 	if arg == "-" {
-		return "", false // 依赖 OLDPWD，无法推断
+		if t.prev == "" {
+			return "", false
+		}
+		return t.prev, true
 	}
 	if strings.HasPrefix(arg, "~") {
 		if t.home == "" {

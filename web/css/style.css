@@ -324,6 +324,7 @@ body {
 .session-viewer.hidden { display: none; }
 
 .session-header {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -332,6 +333,89 @@ body {
   border-bottom: 1px solid #2a3040;
   min-height: 44px;
 }
+
+/* SSH 命令历史下拉面板（挂在 header 下方，盖住终端区域） */
+.history-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 16px;
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+  background: #161b26;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  z-index: 900;
+  overflow: hidden;
+}
+.history-panel.hidden { display: none; }
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #2a3040;
+  font-size: 12px;
+  color: #c9d3e6;
+  flex-wrap: wrap;
+}
+.history-head .history-title { font-weight: 600; }
+.history-limit input {
+  width: 62px;
+  padding: 2px 4px;
+  background: #0f131b;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  color: #e6e6e6;
+  font-size: 12px;
+}
+.history-all { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.history-btn {
+  padding: 2px 8px;
+  font-size: 12px;
+  background: #232a3a;
+  color: #cfe0ff;
+  border: 1px solid #2f394f;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.history-btn:disabled { opacity: 0.45; cursor: default; }
+.history-btn.danger { color: #ff9b9b; }
+.history-list { overflow-y: auto; }
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid #1f2634;
+}
+.history-row:hover { background: #1c2331; }
+.history-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  color: #cfe0ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.history-del {
+  border: none;
+  background: transparent;
+  color: #8b95a8;
+  cursor: pointer;
+  font-size: 12px;
+}
+.history-del:hover { color: #ff8080; }
+.history-empty { padding: 14px; text-align: center; color: #8b95a8; font-size: 12px; }
+.history-hint { padding: 6px 10px; font-size: 11px; color: #8b95a8; }
+
 
 #session-title {
   font-size: 14px;

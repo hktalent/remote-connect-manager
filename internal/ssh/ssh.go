@@ -112,6 +112,9 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 	defer sshClient.Close()
+	// 供 /api/ssh/:id/cwd 在远端校验 pwd 用
+	registerClient(id, sshClient)
+	defer unregisterClient(id)
 
 	// 追踪交互式 shell 的当前目录（起点为远端的 $HOME），SFTP 面板打开时据此定位
 	tr := &cwdTracker{}

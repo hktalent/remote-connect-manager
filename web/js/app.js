@@ -30,6 +30,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const s = activeSession();
     if (s) openTunnelModal(s.conn);
   });
+  document.getElementById('btn-history').addEventListener('click', toggleHistoryPanel);
+  document.getElementById('history-close').addEventListener('click', hideHistoryPanel);
+  document.getElementById('history-list').addEventListener('click', onHistoryListClick);
+  document.getElementById('history-select-all').addEventListener('change', (e) => {
+    document.querySelectorAll('#history-list .history-check').forEach((cb) => { cb.checked = e.target.checked; });
+    updateHistorySel();
+  });
+  document.getElementById('history-del-sel').addEventListener('click', deleteSelectedHistory);
+  document.getElementById('history-clear').addEventListener('click', clearHistoryAll);
+  document.getElementById('history-limit').addEventListener('change', onHistoryLimitChange);
   document.getElementById('btn-drive').addEventListener('click', () => {
     const s = activeSession();
     if (s) openDriveModal(s.conn);
@@ -626,6 +636,8 @@ function showViewer(sess) {
   document.getElementById('btn-drive').classList.toggle('hidden', type !== 'rdp');
   document.getElementById('btn-sftp').classList.toggle('hidden', type !== 'ssh');
   document.getElementById('btn-tunnel').classList.toggle('hidden', type !== 'ssh');
+  document.getElementById('btn-history').classList.toggle('hidden', type !== 'ssh');
+  hideHistoryPanel();
   document.getElementById('session-viewer').classList.remove('hidden');
 }
 
@@ -759,6 +771,191 @@ async function closeSession() {
   await loadConnections();
 }
 
+// ====== SSH 命令历史 ======
+const HIST_LIMIT_KEY = 'rcm.cmdHistoryLimit';
+const HIST_DEFAULT_LIMIT = 200;
+let historyConnId = null;
+
+function histStorageKey(id) { return `rcm.cmdHistory.${id}`; }
+
+function getHistLimit() {
+  const v = parseInt(localStorage.getItem(HIST_LIMIT_KEY) || '', 10);
+  if (!Number.isFinite(v) || v < 10) return HIST_DEFAULT_LIMIT;
+  return Math.min(v, 2000);
+}
+
+function loadHistory(id) {
+  if (!id) return [];
+  try {
+    const arr = JSON.parse(localStorage.getItem(histStorageKey(id)) || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveHistory(id, arr) {
+  try {
+    localStorage.setItem(histStorageKey(id), JSON.stringify(arr.slice(0, getHistLimit())));
+  } catch (e) {}
+}
+
+// 追加一条命令（相邻重复不重复记录）
+function pushHistory(id, cmd) {
+  cmd = String(cmd || '').trim();
+  if (!cmd) return;
+  const arr = loadHistory(id);
+  if (arr[0] === cmd) return;
+  arr.unshift(cmd);
+  saveHistory(id, arr);
+  if (historyConnId === id && !document.getElementById('history-panel').classList.contains('hidden')) {
+    renderHistory();
+  }
+}
+
+// 从终端输入里取出「已提交的命令行」，忽略方向键等 ESC 序列
+function feedHistoryBuffer(id, st, data) {
+  for (let i = 0; i < data.length; i++) {
+    const ch = data[i];
+    if (st.esc) {
+      // CSI/SS3 序列：读到终止字符为止
+      if (ch >= '@' && ch <= '~' && ch !== '[' && ch !== 'O') st.esc = false;
+      continue;
+    }
+    if (ch === '\x1b') { st.esc = true; continue; }
+    if (ch === '\r' || ch === '\n') {
+      if (st.cur.trim()) pushHistory(id, st.cur);
+      st.cur = '';
+      continue;
+    }
+    if (ch === '\x7f' || ch === '\b') { st.cur = st.cur.slice(0, -1); continue; }
+    if (ch === '\x03' || ch === '\x15') { st.cur = ''; continue; }
+    if (ch < ' ') continue;
+    st.cur += ch;
+  }
+}
+
+function renderHistory() {
+  const panel = document.getElementById('history-panel');
+  const list = document.getElementById('history-list');
+  document.getElementById('history-limit').value = getHistLimit();
+  document.getElementById('history-select-all').checked = false;
+  const arr = loadHistory(historyConnId);
+  if (!arr.length) {
+    list.innerHTML = '<div class="history-empty">还没有记录到命令，在终端里执行命令后会自动出现</div>';
+    updateHistorySel();
+    return;
+  }
+  list.innerHTML = arr.map((cmd, i) => `
+    <div class="history-row" data-i="${i}">
+      <input type="checkbox" class="history-check">
+      <code class="history-cmd" title="${escapeHTML(cmd)}">${escapeHTML(cmd)}</code>
+      <button class="history-del" title="删除这条">✕</button>
+    </div>`).join('');
+  updateHistorySel();
+  if (panel) panel.scrollTop = 0;
+}
+
+function updateHistorySel() {
+  const rows = document.querySelectorAll('#history-list .history-row');
+  const selected = Array.from(document.querySelectorAll('#history-list .history-check')).filter((cb) => cb.checked).length;
+  document.getElementById('history-del-sel').disabled = selected === 0;
+  document.getElementById('history-del-sel').textContent = selected ? `删除选中(${selected})` : '删除选中';
+  const all = document.getElementById('history-select-all');
+  if (all) all.checked = rows.length > 0 && selected === rows.length;
+}
+
+function renumberHistoryRows() {
+  document.querySelectorAll('#history-list .history-row').forEach((row, i) => { row.dataset.i = i; });
+}
+
+// 单条删除：只摘掉这一行 DOM，不重绘整个列表
+function removeHistoryRow(rowEl) {
+  const arr = loadHistory(historyConnId);
+  const idx = Number(rowEl.dataset.i);
+  if (Number.isNaN(idx) || idx < 0 || idx >= arr.length) return;
+  arr.splice(idx, 1);
+  saveHistory(historyConnId, arr);
+  rowEl.remove();
+  renumberHistoryRows();
+  if (!arr.length) renderHistory();
+  else updateHistorySel();
+}
+
+function onHistoryListClick(e) {
+  const row = e.target.closest('.history-row');
+  if (!row) return;
+  if (e.target.classList.contains('history-check')) { updateHistorySel(); return; }
+  if (e.target.classList.contains('history-del')) { removeHistoryRow(row); return; }
+  const arr = loadHistory(historyConnId);
+  const cmd = arr[Number(row.dataset.i)];
+  if (!cmd) return;
+  const sess = activeSession();
+  if (!sess || !sess.sendInput) return;
+  sess.sendInput(e.shiftKey ? cmd + '\r' : cmd);
+  if (e.shiftKey) hideHistoryPanel();
+}
+
+// 多条删除：批量摘 DOM 行，无整表重绘、无闪烁
+function deleteSelectedHistory() {
+  const rows = Array.from(document.querySelectorAll('#history-list .history-row'));
+  const idx = rows
+    .filter((row) => row.querySelector('.history-check').checked)
+    .map((row) => Number(row.dataset.i));
+  if (!idx.length) return;
+  const arr = loadHistory(historyConnId);
+  idx.sort((a, b) => b - a).forEach((i) => {
+    if (i >= 0 && i < arr.length) arr.splice(i, 1);
+  });
+  saveHistory(historyConnId, arr);
+  rows.forEach((row) => {
+    if (row.querySelector('.history-check').checked) row.remove();
+  });
+  renumberHistoryRows();
+  if (!arr.length) renderHistory();
+  else updateHistorySel();
+}
+
+function clearHistoryAll() {
+  if (!historyConnId) return;
+  if (!confirm('清空该会话的全部命令历史？')) return;
+  saveHistory(historyConnId, []);
+  renderHistory();
+}
+
+function onHistoryLimitChange(e) {
+  const v = Math.max(10, Math.min(2000, parseInt(e.target.value, 10) || HIST_DEFAULT_LIMIT));
+  e.target.value = v;
+  try { localStorage.setItem(HIST_LIMIT_KEY, String(v)); } catch (err) {}
+  if (!historyConnId) return;
+  let arr = loadHistory(historyConnId);
+  if (arr.length > v) {
+    arr = arr.slice(0, v);
+    saveHistory(historyConnId, arr);
+    // 只摘掉超出的行，不重绘
+    document.querySelectorAll('#history-list .history-row').forEach((row) => {
+      if (Number(row.dataset.i) >= v) row.remove();
+    });
+    renumberHistoryRows();
+    updateHistorySel();
+  }
+}
+
+function toggleHistoryPanel() {
+  const panel = document.getElementById('history-panel');
+  if (!panel.classList.contains('hidden')) { hideHistoryPanel(); return; }
+  const sess = activeSession();
+  if (!sess) return;
+  historyConnId = sess.conn.id;
+  renderHistory();
+  panel.classList.remove('hidden');
+}
+
+function hideHistoryPanel() {
+  const panel = document.getElementById('history-panel');
+  if (panel) panel.classList.add('hidden');
+}
+
 // ====== SSH ======
 function startSSHSession(conn, stage) {
   const termDiv = document.createElement('div');
@@ -850,7 +1047,14 @@ function startSSHSession(conn, stage) {
   };
   ws.onerror = () => term.write('\r\n\x1b[31m[连接错误]\x1b[0m');
 
+  sess.sendInput = (text) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(text);
+  };
+
+  // 记录用户敲下的命令（回车提交），供会话头部的「命令历史」面板使用
+  const histBuf = { cur: '', esc: false };
   term.onData((data) => {
+    feedHistoryBuffer(conn.id, histBuf, data);
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   });
 
