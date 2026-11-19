@@ -191,24 +191,15 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 
-	// 重连时带上 ?cwd=，直接在目标目录里拉起 shell，避免先 cd 一次把屏幕刷脏
-	shellStarted := false
-	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
-		// 交互式 shell 从指定目录启动；$SHELL 取登录 shell，没有则退回 /bin/sh
-		cmd := fmt.Sprintf("cd -- %s && exec ${SHELL:-/bin/sh}", shellQuote(dir))
-		if err := session.Start(cmd); err == nil {
-			shellStarted = true
-		}
+	// 一律走标准 shell 请求（不 exec 自定义命令：部分 sshd 只允许 shell/受限 shell，
+	// exec 会被拒或直接退出，表现为「状态显示已连接但终端一片空白」）
+	if err := session.Shell(); err != nil {
+		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
+		return
 	}
-	if !shellStarted {
-		if err := session.Shell(); err != nil {
-			ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
-			return
-		}
-		// 远端不允许 exec 时退化为：先 cd 再 clear，保证目录仍被还原
-		if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
-			_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s && clear\r", shellQuote(dir))))
-		}
+	// 重连还原目录：shell 起来后发一条 cd，再用 clear 把这条回显擦掉
+	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
+		_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s 2>/dev/null; clear\r", shellQuote(dir))))
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取

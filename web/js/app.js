@@ -1236,14 +1236,32 @@ function startSSHSession(conn, stage) {
     ws = socket;
     socket.binaryType = 'arraybuffer';
 
+    // WebSocket 打开 ≠ SSH 连上：只有收到远端第一个字节（提示符）才算「已连接」，
+    // 否则 SSH 认证/建会话失败时会一直显示绿灯却一片空白
+    let firstData = false;
     socket.onopen = () => {
       if (ws !== socket) return;
-      sess.online = true;
-      syncConnStatus();
       fit();
       resize();
     };
     socket.onmessage = (ev) => {
+      if (ws !== socket) return;
+      if (typeof ev.data === 'string' && ev.data.startsWith('{')) {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m && m.type === 'error') {
+            sess.online = false;
+            syncConnStatus();
+            term.write('\r\n\x1b[31m[连接失败] ' + String(m.data || '') + '\x1b[0m\r\n');
+            return;
+          }
+        } catch (e) {}
+      }
+      if (!firstData) {
+        firstData = true;
+        sess.online = true;
+        syncConnStatus();
+      }
       if (typeof ev.data === 'string') {
         term.write(ev.data);
       } else {
@@ -1263,6 +1281,12 @@ function startSSHSession(conn, stage) {
       sess.online = false;
       syncConnStatus();
     };
+    setTimeout(() => {
+      if (sess.closed || ws !== socket || firstData) return;
+      sess.online = false;
+      syncConnStatus();
+      term.write('\r\n\x1b[31m[连接超时：12 秒内没有收到远端输出，请检查主机/端口/账号][0m\r\n');
+    }, 12000);
   };
 
   // 重连：先记住断开前的当前目录，连上后直接在同一个目录里起 shell
