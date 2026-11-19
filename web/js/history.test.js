@@ -242,3 +242,20 @@ function zshTerm(initialLines) {
   assert(l12[0] === 'echo "o\\\nk"', '内容正确: ' + JSON.stringify(l12[0]));
   assert(!/└─|quote>|  /.test(l12[0]), '不含提示符与补白');
 })();
+
+// 13) 没捕获到 PS2 提示符时，也要把 dquote> 这类续行标记剥掉
+(async () => {
+  const term = zshTerm(['└─# ']);
+  const st13 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  ctx.feedHistoryBuffer('c13', st13, 'echo "o\\', term);
+  term.setLine('└─# echo "o\\');
+  ctx.feedHistoryBuffer('c13', st13, '\r', term);
+  term.pushLine('');                       // 光标行还没画出续行提示符
+  ctx.feedHistoryBuffer('c13', st13, 'k"', term);  // prompt 捕获为空
+  term.setLine('dquote> k"' + ' '.repeat(10));
+  ctx.feedHistoryBuffer('c13', st13, '\r', term);
+
+  const l13 = ctx.loadHistory('c13');
+  assert(l13.length === 1, '多行只一条');
+  assert(l13[0] === 'echo "o\\\nk"', '剥掉 dquote> 且保留换行: ' + JSON.stringify(l13[0]));
+})();

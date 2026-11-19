@@ -966,6 +966,10 @@ function commitHistoryLine(id, st, termLine) {
       if (idx >= 0) { shown = shown.slice(idx + prompt.length); stripped = true; }
     }
   }
+  // PS2 续行兜底：没能捕获提示符时，去掉行首形如 dquote> / quote> / > 的续行标记
+  if (!stripped && st.lines && st.lines.length > 0) {
+    shown = shown.replace(/^[^\s>]{0,20}>\s*/, '').replace(/^>\s*/, '');
+  }
   shown = shown.replace(/\s+$/, '').trim();
   // 没剥掉提示符就别用终端文本（会把 ┌──(root…)# 写进历史），退回按键缓冲
   const line = (stripped && shown.length >= typed.length) ? shown : typed;
@@ -1062,9 +1066,17 @@ function onHistoryListClick(e) {
   const cmd = arr[Number(row.dataset.i)];
   if (!cmd) return;
   const sess = activeSession();
-  if (!sess || !sess.sendInput) return;
-  sess.sendInput(e.shiftKey ? cmd + '\r' : cmd);
-  if (e.shiftKey) hideHistoryPanel();
+  if (!sess) return;
+  // 用粘贴（bracketed paste）而不是逐字符输入：多行命令不会被 shell 拆成
+  // 「第一行 + dquote> 续行提示 + 第二行」，看起来就像原样贴回去
+  if (typeof sess.paste === 'function') sess.paste(cmd);
+  else if (typeof sess.sendInput === 'function') sess.sendInput(cmd);
+  if (e.shiftKey) {
+    if (typeof sess.sendInput === 'function') {
+      setTimeout(() => sess.sendInput('\r'), 80);
+    }
+    hideHistoryPanel();
+  }
 }
 
 // 多条删除：批量摘 DOM 行，无整表重绘、无闪烁
