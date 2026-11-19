@@ -1,10 +1,10 @@
 // 本文件记录每条 SSH 连接交互式 shell 的「当前目录」，供 SFTP 面板打开时直接对齐。
-// 目录来自对终端输入的解析（cd 命令），起点用一次 exec 取到的 $HOME。
+// 目录只来自本地推断与权威来源（提示符里的路径、pwd 的输出），
+// 起点用登录用户名推断的家目录——整个过程不在远端执行任何命令。
 package ssh
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path"
@@ -22,7 +22,7 @@ var (
 	cwdMu   sync.RWMutex
 	cwdByID = map[string]string{}
 
-	// 最后一次确认过的目录（断开后仍保留，重连时用它还原）
+	// 权威来源（提示符 / pwd 输出）确认过的目录（断开后仍保留，供 SFTP 定位）
 	lastMu      sync.RWMutex
 	lastCwdByID = map[string]string{}
 
@@ -33,9 +33,35 @@ var (
 
 	clientMu sync.RWMutex
 	clients  = map[string]*xssh.Client{}
+
+	userMu sync.RWMutex
+	users  = map[string]string{}
 )
 
-// registerClient 记录连接对应的 SSH 客户端，供 /cwd 接口在远端执行 pwd 校验
+// registerUser 记录该连接登录用的用户名，用于本地推断家目录（不执行任何远端命令）
+func registerUser(id, user string) {
+	if id == "" || user == "" {
+		return
+	}
+	userMu.Lock()
+	users[id] = user
+	userMu.Unlock()
+}
+
+func unregisterUser(id string) {
+	userMu.Lock()
+	delete(users, id)
+	userMu.Unlock()
+}
+
+func liveUser(id string) string {
+	userMu.RLock()
+	u := users[id]
+	userMu.RUnlock()
+	return u
+}
+
+// registerClient 记录连接对应的 SSH 客户端
 func registerClient(id string, client *xssh.Client) {
 	if id == "" || client == nil {
 		return
@@ -157,52 +183,25 @@ func clearCwd(id string) {
 	cwdMu.Unlock()
 }
 
-// Cwd 返回该连接 shell 的当前目录（尽力而为：未建立过会话时 known=false）
+// Cwd 返回该连接 shell 的当前目录（纯本地推断 + 提示符/pwd 权威来源）。
+// 刻意不再用远端 `cd -- … && pwd` 去校验目录：那会在远端多开一次 session 执行命令，
+// 并且会把 Tab 补全记下来的半截路径逐级回退成父目录直到 /，把 / 当成当前目录记死。
 func Cwd(c *gin.Context) {
 	id := c.Param("id")
 	dir, known := GetCwd(id)
 	if pdir, ok := GetPromptCwd(id); ok && pdir != "" {
-		// 提示符里直接写着目录，最接近用户看到的 pwd，优先使用
+		// 提示符里直接写着目录，就是用户看到的 pwd，优先级最高
+		if strings.HasPrefix(pdir, "~") {
+			if home := homeGuess(liveUser(id)); home != "" {
+				pdir = path.Join(home, strings.TrimPrefix(strings.TrimPrefix(pdir, "~"), "/"))
+			}
+		}
 		dir, known = pdir, true
 	}
-	client := liveClient(id)
-	if client == nil {
-		// 会话已断开：用断开前记住的目录，保证重连能回到原处
-		if dir == "" {
-			if last, ok := GetLastCwd(id); ok {
-				dir, known = last, true
-			}
-		}
-		c.JSON(http.StatusOK, gin.H{"cwd": dir, "known": known})
-		return
-	}
-	if client != nil {
-		if dir == "" {
-			if home := homeDir(client); home != "" {
-				dir, known = home, true
-			}
-		}
-		// 交给远端执行 `cd <dir> && pwd -P`：拿到真实路径（解析 ~ / .. / 软链接）
-		if strings.HasPrefix(dir, "~") {
-			if home := homeDir(client); home != "" {
-				dir = path.Join(home, strings.TrimPrefix(strings.TrimPrefix(dir, "~"), "/"))
-			}
-		}
-		if dir != "" {
-			if real := resolveExisting(client, dir); real != "" {
-				if real != dir {
-					SetCwd(id, real)
-				}
-				dir = real
-				rememberLast(id, real)
-			} else if last, ok := GetLastCwd(id); ok && last != "" {
-				// 跟踪到的路径不存在（Tab 补全只记了半截）：退回最后一次确认过的目录
-				SetCwd(id, last)
-				dir = last
-			} else {
-				// 既不存在又没有历史：不要把无效路径当成当前目录
-				dir, known = "", false
-			}
+	if dir == "" {
+		// 会话已断开 / 还没拿到提示符：用提示符或 pwd 输出确认过、落盘的最后目录
+		if last, ok := GetLastCwd(id); ok && last != "" {
+			dir, known = last, true
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"cwd": dir, "known": known})
@@ -327,58 +326,25 @@ func clearPromptCwd(id string) {
 	promptMu.Unlock()
 }
 
-// resolveExisting 逐级向上找一个真实存在的目录，全都不存在返回空串
-// 只认「这个目录本身存在」，绝不再向上回退到父目录/根目录：
-// 回退会把半截路径（Tab 补全只记录到一半）解析成 /，进而把 / 当成当前目录记下来
-func resolveExisting(client *xssh.Client, dir string) string {
-	if dir == "" || dir == "." {
-		return ""
-	}
-	return resolveDir(client, dir)
-}
-
-// resolveDir 在远端把目录转成绝对真实路径，失败返回空串
-func resolveDir(client *xssh.Client, dir string) string {
-	s, err := client.NewSession()
-	if err != nil {
-		return ""
-	}
-	defer s.Close()
-	out, err := s.Output(fmt.Sprintf("cd -- %s 2>/dev/null && pwd", shellQuote(dir)))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// safeRestoreCwd 校验重连时要还原的目录：必须是绝对路径、无控制字符
-func safeRestoreCwd(dir string) string {
-	dir = strings.TrimSpace(dir)
-	if dir == "" || !strings.HasPrefix(dir, "/") || len(dir) > 1024 {
-		return ""
-	}
-	if strings.ContainsAny(dir, "\r\n\x00") {
-		return ""
-	}
-	return dir
-}
-
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// homeDir 通过一次 exec 取远端 $HOME，作为目录追踪的起点
-func homeDir(client *xssh.Client) string {
-	s, err := client.NewSession()
-	if err != nil {
+// homeGuess 用登录用户名本地推断家目录，作为目录跟踪的起点。
+// 刻意不再 exec `printf "$HOME"` 去远端探测：那属于"自动执行命令"，
+// 而目录信息完全可以从提示符/pwd 输出补齐，多一次远端命令没有收益。
+func homeGuess(user string) string {
+	user = strings.TrimSpace(user)
+	if user == "" {
 		return ""
 	}
-	defer s.Close()
-	out, err := s.Output(`printf %s "$HOME"`)
-	if err != nil {
+	if user == "root" {
+		return "/root"
+	}
+	if strings.ContainsAny(user, "/ \t\n") {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return path.Join("/home", user)
 }
 
 // cwdTracker 从终端输入里解析 cd 命令，维护当前目录

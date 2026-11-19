@@ -112,7 +112,7 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 	defer sshClient.Close()
-	// 供 /api/ssh/:id/cwd 在远端校验 pwd 用
+	// 供 /api/ssh/:id/cwd、SFTP 判断会话是否仍然存活
 	registerClient(id, sshClient)
 	defer unregisterClient(id)
 
@@ -137,9 +137,12 @@ func HandleSSH(c *gin.Context) {
 	}()
 	defer close(keepStop)
 
-	// 追踪交互式 shell 的当前目录（起点为远端的 $HOME），SFTP 面板打开时据此定位
+	// 追踪交互式 shell 的当前目录（起点用登录用户名本地推断的家目录），SFTP 面板打开时据此定位。
+	// 注意：不要在这里到远端 exec 探测 $HOME——登录过程只允许一次标准 shell 请求。
+	registerUser(id, conn.Username)
+	defer unregisterUser(id)
 	tr := &cwdTracker{}
-	if home := homeDir(sshClient); home != "" {
+	if home := homeGuess(conn.Username); home != "" {
 		tr.seed(home)
 		SetCwd(id, home)
 	}
@@ -193,22 +196,12 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 
-	// 还原目录：用 exec 直接在目标目录里拉起交互式 shell。
-	// 关键：绝不往 stdin 里敲 cd——那会在终端留下 "cd -- '/xxx' ..." 回显，
-	// 用户会看到莫名其妙被自动执行的命令。
-	// cd 用 ';' 而不是 '&&'：目录不存在也要把 shell 起起来（落在家目录）。
-	shellStarted := false
-	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
-		cmd := fmt.Sprintf(`cd -- %s 2>/dev/null; s=${SHELL:-/bin/sh}; [ -x "$s" ] || s=/bin/sh; exec "$s" -i`, shellQuote(dir))
-		if err := session.Start(cmd); err == nil {
-			shellStarted = true
-		}
-	}
-	if !shellStarted {
-		if err := session.Shell(); err != nil {
-			ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
-			return
-		}
+	// 一律走标准 shell 请求：
+	// 不再用 exec 在目标目录里启动 shell，也绝不往 stdin 推 cd/清屏命令。
+	// 还原目录做的任何"自动执行"都会污染终端、污染远端历史，属于 bug。
+	if err := session.Shell(); err != nil {
+		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
+		return
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取
@@ -286,15 +279,12 @@ func HandleSSH(c *gin.Context) {
 			}
 			// 用户敲了 pwd：标记一下，用它的输出精确校准当前目录
 			notePwdInput(id, data)
-			// 从输入里解析 cd，同步给 SFTP 面板；校验存在的路径同时记入「最后目录」
+			// 从输入里解析 cd，仅同步给 SFTP 面板用。
+			// 不在这里做远端 `cd && pwd` 校验（那是多一次 session 执行命令，
+			// 且会把半截路径回退成父目录/根目录），也不记入「最后目录」——
+			// 只有提示符 / pwd 输出这类权威来源才写「最后目录」。
 			if dir, changed := tr.feed(data); changed {
 				SetCwd(id, dir)
-				if real := resolveExisting(sshClient, dir); real != "" {
-					if real != dir {
-						SetCwd(id, real)
-					}
-					rememberLast(id, real)
-				}
 			}
 			stdin.Write(data)
 		}

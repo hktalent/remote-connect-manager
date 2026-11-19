@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -121,35 +120,27 @@ func TestCwdTrackerAbsoluteWithoutBase(t *testing.T) {
 	}
 }
 
-// /api/ssh/:id/cwd 会用远端 `pwd -P` 校正追踪到的目录
-func TestCwdResolvesRemotePath(t *testing.T) {
-	srv := testutil.StartSSH(t, nil)
-	connID := testutil.RegisterConnection(t, srv)
-	conn, err := config.GetConnectionByID(connID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := Dial(conn)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer client.Close()
-	registerClient(connID, client)
-	defer unregisterClient(connID)
+// /api/ssh/:id/cwd 不再向远端执行任何命令：
+// 追踪到的目录原样返回，绝不逐级回退到父目录（那是把半截路径解析成父目录/根导致跳错）
+func TestCwdNoRemoteVerify(t *testing.T) {
+	connID := "conn-no-remote-verify"
+	clearCwd(connID)
+	clearPromptCwd(connID)
+	clearPendingPwd(connID)
+	unregisterClient(connID)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.GET("/api/ssh/:id/cwd", Cwd)
 
-	SetCwd(connID, "/tmp")
-	if got := callCwd(t, r, connID); got != "/tmp" {
-		t.Fatalf("cwd = %q, want /tmp", got)
+	SetCwd(connID, "/tmp/rcm-typo-dir")
+	if got := callCwd(t, r, connID); got != "/tmp/rcm-typo-dir" {
+		t.Fatalf("不应回退到父目录, got %q", got)
 	}
 
-	// 目录已不存在时应回退到仍存在的父目录
-	SetCwd(connID, "/tmp/rcm-not-exist-xyz")
-	if got := callCwd(t, r, connID); got != "/tmp" {
-		t.Fatalf("不存在的目录应回退到 /tmp, got %q", got)
+	SetCwd(connID, "/home/kali")
+	if got := callCwd(t, r, connID); got != "/home/kali" {
+		t.Fatalf("cwd = %q", got)
 	}
 }
 
@@ -213,30 +204,6 @@ func TestCwdPrefersPromptOverTracker(t *testing.T) {
 
 	if got := callCwd(t, r, connID); got != "/tmp" {
 		t.Fatalf("cwd 应优先用提示符里的 /tmp, got %q", got)
-	}
-}
-
-func TestSafeRestoreCwd(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"/home/kali", "/home/kali"},
-		{"  /tmp/x  ", "/tmp/x"},
-		{"", ""},
-		{"home/kali", ""},
-		{"/tmp/a\nb", ""},
-		{"/tmp/a\rb", ""},
-		{"/tmp/ok; rm -rf /", "/tmp/ok; rm -rf /"}, // 由 shellQuote 负责转义
-	}
-	for _, c := range cases {
-		if got := safeRestoreCwd(c.in); got != c.want {
-			t.Fatalf("safeRestoreCwd(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-	// 路径里的单引号必须被正确转义，不能拼出第二个命令
-	got := shellQuote("/tmp/it's; rm -rf /tmp/x")
-	for _, bad := range []string{"'/tmp/it's"} {
-		if strings.Contains(got, bad) {
-			t.Fatalf("quote leaked: %s", got)
-		}
 	}
 }
 

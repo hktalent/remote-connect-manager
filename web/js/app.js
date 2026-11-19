@@ -1261,12 +1261,13 @@ function startSSHSession(conn, stage, restoreCwd) {
     ro.observe(stage);
   }
 
-  // 建立（或重建）SSH 传输层：重连只需要换一条 WebSocket + 一条新的 SSH 会话
-  const connect = (restoreCwd) => {
+  // 建立（或重建）SSH 传输层：重连只需要换一条 WebSocket + 一条新的 SSH 会话。
+  // 注意不再带 ?cwd= 去"还原目录"：后端不会再为此向终端推任何命令/exec 定制启动，
+  // 会话一律是标准登录 shell（落在 $HOME），目录记忆只用于 SFTP 面板定位。
+  const connect = () => {
     sess.online = null;
     syncConnStatus();
-    const q = restoreCwd ? `?cwd=${encodeURIComponent(restoreCwd)}` : '';
-    const socket = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}${q}`);
+    const socket = new WebSocket(`${proto}://${location.host}/ws/ssh/${conn.id}`);
     ws = socket;
     socket.binaryType = 'arraybuffer';
 
@@ -1323,16 +1324,14 @@ function startSSHSession(conn, stage, restoreCwd) {
     }, 12000);
   };
 
-  // 重连：先记住断开前的当前目录，连上后直接在同一个目录里起 shell
+  // 重连：只重建连接，不做任何"自动回到上次目录"的注入
   sess.reconnect = async () => {
     if (sess.closed) return;
     term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
     sess.online = null;
     syncConnStatus();
-    const cwd = await fetchLastCwd(conn.id);
-    if (sess.closed) return;
     try { if (ws) ws.close(); } catch (e) {}
-    connect(cwd);
+    connect();
   };
 
   sess.sendInput = (text) => {
