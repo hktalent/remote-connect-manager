@@ -822,9 +822,10 @@ function readLineText(term, maxLines = 8) {
     for (let y = startY; y <= endY; y++) {
       const line = buf.getLine(y);
       if (!line) continue;
-      text += y === endY
+      const part = y === endY
         ? line.translateToString(true, 0, buf.cursorX)
         : line.translateToString(true);
+      text += (y === startY ? '' : '\n') + part;
     }
     return text;
   } catch (e) {
@@ -843,9 +844,10 @@ function readCommandText(term, promptStartY) {
     for (let y = promptStartY; y <= endY; y++) {
       const line = buf.getLine(y);
       if (!line) continue;
-      text += y === endY
+      const part = y === endY
         ? line.translateToString(true, 0, buf.cursorX)
         : line.translateToString(true);
+      text += (y === startY ? '' : '\n') + part;
     }
     return text;
   } catch (e) {

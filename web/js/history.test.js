@@ -178,3 +178,22 @@ function zshTerm(initialLines) {
   assert(l8[0] === 'echo "ok"', '不含提示符/补白: ' + JSON.stringify(l8[0]));
   assert(!/┌──|└─/.test(l8[0]), '记录里没有提示符字符');
 })();
+
+// 9) 引号内反斜杠续行（多行字符串）：换行必须保留，不能被粘成一行
+(async () => {
+  const term = zshTerm(['└─# ']);
+  const st9 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  ctx.feedHistoryBuffer('c9', st9, 'echo "o\\', term);
+  term.setLine('└─# echo "o\\' + ' '.repeat(20));
+  ctx.feedHistoryBuffer('c9', st9, '\r', term);        // 引号未闭合 → 继续
+  term.pushLine('> ');
+  ctx.feedHistoryBuffer('c9', st9, 'k"', term);
+  term.setLine('> k"' + ' '.repeat(20));
+  ctx.feedHistoryBuffer('c9', st9, '\r', term);        // 引号闭合 → 提交
+
+  const l9 = ctx.loadHistory('c9');
+  const expect9 = 'echo "o\\\nk"';
+  assert(l9.length === 1, '多行字符串只记一条, 实际 ' + l9.length);
+  assert(l9[0] === expect9, '换行保留: ' + JSON.stringify(l9[0]));
+  assert(l9[0].includes('\n'), '记录中含真实换行');
+})();
