@@ -845,7 +845,8 @@ function feedHistoryBuffer(id, st, data, term) {
     }
     if (ch === '\x1b') { st.esc = true; continue; }
     if (ch === '\r' || ch === '\n') {
-      commitHistoryLine(id, st, term);
+      // 回车这一刻光标还在命令行末尾，立刻读，避免读到下一行的新提示符
+      commitHistoryLine(id, st, term ? readLineText(term) : '');
       continue;
     }
     if (ch === '\x7f' || ch === '\b') { st.cur = st.cur.slice(0, -1); continue; }
@@ -856,28 +857,24 @@ function feedHistoryBuffer(id, st, data, term) {
   }
 }
 
-// 提交一条历史：优先取终端可见行（去掉开头记录的提示符），拿不到再用按键缓冲
-function commitHistoryLine(id, st, term) {
+// 提交一条历史：以「回车时终端上光标之前那一行」为准（含 Tab 补全内容），
+// 按键缓冲兜底，防止网络回显滞后时丢掉最后几个字符。
+function commitHistoryLine(id, st, termLine) {
   const typed = st.cur.trim();
   const prompt = st.prompt || '';
   st.cur = '';
   st.prompt = null;
   if (!typed) return;
-  if (!term || !term.buffer) {
-    pushHistory(id, typed);
-    return;
+
+  let shown = String(termLine || '').replace(/\s+$/, '');
+  if (prompt) {
+    // 取最后一次出现的提示符，兼容命令换行、滚动后前面残留输出
+    const idx = shown.lastIndexOf(prompt);
+    if (idx >= 0) shown = shown.slice(idx + prompt.length);
   }
-  // 等远端把这一行回显完（Tab 补全的内容只出现在回显里）
-  setTimeout(() => {
-    let full = readLineText(term).trim();
-    if (prompt) {
-      // 取最后一次出现的提示符，兼容命令换行、滚动后前几行残留输出的情况
-      const idx = full.lastIndexOf(prompt);
-      if (idx >= 0) full = full.slice(idx + prompt.length).trim();
-    }
-    // 回显可能被清屏/滚动打断，取更完整的那个
-    pushHistory(id, full && full.length >= typed.length ? full : typed);
-  }, 80);
+  shown = shown.replace(/\s+$/, '').trim();
+  // 回显可能落后于按键，取更完整的那个
+  pushHistory(id, shown.length >= typed.length ? shown : typed);
 }
 
 function renderHistory() {

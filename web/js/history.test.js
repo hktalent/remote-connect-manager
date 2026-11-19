@@ -86,9 +86,10 @@ function fakeTerm() {
   const st2 = { cur: '', esc: false, prompt: null };
   // 用户只敲了 "cd /ho"，其余由远端 shell 的 Tab 补全完成
   ctx.feedHistoryBuffer('c2', st2, 'cd /ho', term);
-  term.setLine('kali@kali:~$ cd /home/kali');
+  // 回显行尾部有终端补白，且回车后会出现下一行的新提示符，不能带进历史
+  term.setLine('kali@kali:~$ cd /home/kali' + ' '.repeat(40));
   ctx.feedHistoryBuffer('c2', st2, '\r', term);
-  await new Promise((r) => setTimeout(r, 120));
   const list = ctx.loadHistory('c2');
   assert(list[0] === 'cd /home/kali', '补全后的完整命令被记录: ' + JSON.stringify(list[0]));
+  assert(!/\s{2,}/.test(list[0]), '记录里不含补白空格');
 })();
