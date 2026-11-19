@@ -676,6 +676,20 @@ function markCardLive(connId, live) {
   if (card) card.classList.toggle('live', live);
 }
 
+// 取该连接最后已知的 shell 目录（后端在会话断开后仍保留），用于登录/重连后还原
+async function fetchLastCwd(connId, timeoutMs = 2500) {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(`/api/ssh/${connId}/cwd`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return '';
+    const d = await res.json();
+    if (d && typeof d.cwd === 'string' && d.cwd.startsWith('/')) return d.cwd;
+  } catch (e) {}
+  return '';
+}
+
 async function openSession(conn) {
   // 已有存活会话：从卡片位置等比放大回来，不重建连接
   const alive = sessions.get(conn.id);
@@ -697,7 +711,11 @@ async function openSession(conn) {
   body.appendChild(stage);
 
   let sess = null;
-  if (conn.type === 'ssh') sess = startSSHSession(conn, stage);
+  if (conn.type === 'ssh') {
+    // 登录时也还原上次的目录：先问后端这个连接最后停在哪
+    const lastCwd = await fetchLastCwd(conn.id);
+    sess = startSSHSession(conn, stage, lastCwd);
+  }
   else if (conn.type === 'vnc') sess = startVNCSession(conn, stage);
   else if (conn.type === 'rdp' || conn.type === 'telnet') sess = startGuacSession(conn, stage);
   if (!sess) {
@@ -830,15 +848,28 @@ function saveHistory(id, arr) {
   } catch (e) {}
 }
 
-// 追加一条命令：同一命令执行多次也各记一条，方便回看执行顺序
+// 记录一条命令：相同命令只保留一份（重复执行时把它移到最前），方便点击复用
 function pushHistory(id, cmd) {
   cmd = String(cmd || '').trim();
   if (!cmd) return;
   const arr = loadHistory(id);
+  const idx = arr.indexOf(cmd);
+  if (idx === 0) return; // 已经在最前，不用再记
+  if (idx > 0) arr.splice(idx, 1);
   arr.unshift(cmd);
   saveHistory(id, arr);
+
   const panel = document.getElementById('history-panel');
   if (historyConnId === id && panel && !panel.classList.contains('hidden')) {
+    if (idx > 0) {
+      // 先摘掉旧的那一行（此时行列顺序仍与旧数组一致），再插到最前面
+      const list = document.getElementById('history-list');
+      const rows = list ? list.querySelectorAll('.history-row') : [];
+      if (rows[idx]) {
+        rows[idx].remove();
+        renumberHistoryRows();
+      }
+    }
     insertHistoryRowTop(cmd);
   }
 }
@@ -1152,7 +1183,7 @@ function hideHistoryPanel() {
 }
 
 // ====== SSH ======
-function startSSHSession(conn, stage) {
+function startSSHSession(conn, stage, restoreCwd) {
   const termDiv = document.createElement('div');
   termDiv.id = 'terminal';
   stage.appendChild(termDiv);
@@ -1295,17 +1326,7 @@ function startSSHSession(conn, stage) {
     term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
     sess.online = null;
     syncConnStatus();
-    let cwd = '';
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 2500);
-      const res = await fetch(`/api/ssh/${conn.id}/cwd`, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const d = await res.json();
-        if (d && typeof d.cwd === 'string' && d.cwd.startsWith('/')) cwd = d.cwd;
-      }
-    } catch (e) {}
+    const cwd = await fetchLastCwd(conn.id);
     if (sess.closed) return;
     try { if (ws) ws.close(); } catch (e) {}
     connect(cwd);
@@ -1324,7 +1345,7 @@ function startSSHSession(conn, stage) {
 
   window.addEventListener('resize', onResize);
   fit();
-  connect();
+  connect(restoreCwd || '');
   return sess;
 }
 

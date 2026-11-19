@@ -34,9 +34,9 @@ ctx.pushHistory('c1', 'ls -la');
 ctx.pushHistory('c1', 'ls -la');
 ctx.pushHistory('c1', 'cd /var/log');
 let arr = ctx.loadHistory('c1');
-assert(arr.length === 3, '同一命令执行两次各记一条: ' + JSON.stringify(arr));
+assert(arr.length === 2, '相同命令只留一份: ' + JSON.stringify(arr));
 assert(arr[0] === 'cd /var/log', '最新命令在最前');
-assert(arr[2] === 'ls -la' && arr[1] === 'ls -la', '重复命令都保留');
+assert(arr[1] === 'ls -la', '重复命令保留一份');
 
 // 2) 终端输入解析：回车提交、退格、Ctrl-U、方向键忽略
 const st = { cur: '', esc: false };
@@ -221,8 +221,8 @@ function zshTerm(initialLines) {
     term.setLine('└─# ');
   }
   const l11 = ctx.loadHistory('c11');
-  assert(l11.length === 2, '两条都记录: ' + JSON.stringify(l11));
-  assert(l11[0] === 'cd /home/kali' && l11[1] === 'cd /home/kali', '内容一致');
+  assert(l11.length === 1, '重复执行只留一条: ' + JSON.stringify(l11));
+  assert(l11[0] === 'cd /home/kali', '内容正确');
 })();
 
 // 12) 多行字符串：不含提示符、不含补白，行内换行保留
@@ -275,4 +275,14 @@ function zshTerm(initialLines) {
   const l14 = ctx.loadHistory('c14');
   assert(l14.length === 1, '反查执行后记录一条: ' + JSON.stringify(l14));
   assert(l14[0] === 'ps -ef|grep "aireplay-ng"', '记录完整命令: ' + JSON.stringify(l14[0]));
+})();
+
+// 15) 相同命令去重并移到最前：a, b, a → [a, b]
+(async () => {
+  ctx.pushHistory('c15', 'ls');
+  ctx.pushHistory('c15', 'pwd');
+  ctx.pushHistory('c15', 'ls');
+  const l15 = ctx.loadHistory('c15');
+  assert(l15.length === 2, '去重后两条: ' + JSON.stringify(l15));
+  assert(l15[0] === 'ls' && l15[1] === 'pwd', '重复命令移到最前: ' + JSON.stringify(l15));
 })();
