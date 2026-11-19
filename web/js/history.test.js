@@ -93,3 +93,47 @@ function fakeTerm() {
   assert(list[0] === 'cd /home/kali', '补全后的完整命令被记录: ' + JSON.stringify(list[0]));
   assert(!/\s{2,}/.test(list[0]), '记录里不含补白空格');
 })();
+
+// 5) 反斜杠续行的多行命令合成一条
+function typeLine(term, id, st, shown, padding) {
+  term.setLine(shown + (padding ? ' '.repeat(padding) : ''));
+  ctx.feedHistoryBuffer(id, st, '\r', term);
+}
+
+(async () => {
+  const term = fakeTerm();
+  const st3 = { cur: '', esc: false, prompt: null, lines: [] };
+  term.setLine('kali@kali:~$ ');
+  ctx.feedHistoryBuffer('c3', st3, 'gh repo create ws-scrcpy \\', term);
+  typeLine(term, 'c3', st3, 'kali@kali:~$ gh repo create ws-scrcpy \\', 20);
+  term.setLine('> ');
+  ctx.feedHistoryBuffer('c3', st3, '--public \\', term);
+  typeLine(term, 'c3', st3, '> --public \\', 20);
+  term.setLine('> ');
+  ctx.feedHistoryBuffer('c3', st3, '--license mit', term);
+  typeLine(term, 'c3', st3, '> --license mit', 20);
+
+  const list = ctx.loadHistory('c3');
+  const expect = 'gh repo create ws-scrcpy \\\n--public \\\n--license mit';
+  assert(list.length === 1, '续行只记录一条, 实际 ' + list.length);
+  assert(list[0] === expect, '多行完整命令: ' + JSON.stringify(list[0]));
+
+  // 6) 引号未闭合也按续行处理
+  const st4 = { cur: '', esc: false, prompt: null, lines: [] };
+  term.setLine('kali@kali:~$ ');
+  ctx.feedHistoryBuffer('c4', st4, 'echo "hello', term);
+  typeLine(term, 'c4', st4, 'kali@kali:~$ echo "hello', 10);
+  term.setLine('> ');
+  ctx.feedHistoryBuffer('c4', st4, 'world"', term);
+  typeLine(term, 'c4', st4, '> world"', 10);
+  const l4 = ctx.loadHistory('c4');
+  assert(l4.length === 1 && l4[0] === 'echo "hello\nworld"', '引号续行合成: ' + JSON.stringify(l4[0]));
+
+  // 7) Ctrl-C 丢弃未完成的多行命令
+  const st5 = { cur: '', esc: false, prompt: null, lines: [] };
+  term.setLine('kali@kali:~$ ');
+  ctx.feedHistoryBuffer('c5', st5, 'rm -rf /tmp/x \\', term);
+  typeLine(term, 'c5', st5, 'kali@kali:~$ rm -rf /tmp/x \\', 10);
+  ctx.feedHistoryBuffer('c5', st5, '\x03', term);
+  assert(ctx.loadHistory('c5').length === 0, 'Ctrl-C 放弃未完成命令');
+})();

@@ -850,21 +850,49 @@ function feedHistoryBuffer(id, st, data, term) {
       continue;
     }
     if (ch === '\x7f' || ch === '\b') { st.cur = st.cur.slice(0, -1); continue; }
-    if (ch === '\x03' || ch === '\x15') { st.cur = ''; st.prompt = null; continue; }
+    if (ch === '\x03' || ch === '\x15') {
+      // Ctrl-C / Ctrl-U：放弃当前未完成的（多行）命令
+      st.cur = '';
+      st.prompt = null;
+      st.lines = [];
+      continue;
+    }
     if (ch < ' ') continue;
     if (!st.prompt && term) st.prompt = readLineText(term); // 敲第一个字符前的提示符
     st.cur += ch;
   }
 }
 
+// 行尾是否以未转义的反斜杠结尾（奇数个 \ 才算续行）
+function endsWithContinuation(line) {
+  let n = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === '\\'; i--) n++;
+  return n % 2 === 1;
+}
+
+// 引号是否还没闭合（' " `），决定 shell 是否进入 PS2 续行
+function hasUnclosedQuote(text) {
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === '') {
+      if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+      continue;
+    }
+    if (ch === '\\' && quote !== "'") { i++; continue; } // 双引号/反引号内反斜杠转义
+    if (ch === quote) quote = '';
+  }
+  return quote !== '';
+}
+
 // 提交一条历史：以「回车时终端上光标之前那一行」为准（含 Tab 补全内容），
-// 按键缓冲兜底，防止网络回显滞后时丢掉最后几个字符。
+// 按键缓冲兜底。行尾反斜杠续行、引号未闭合时继续累积，最后合成完整一条命令。
 function commitHistoryLine(id, st, termLine) {
   const typed = st.cur.trim();
   const prompt = st.prompt || '';
   st.cur = '';
   st.prompt = null;
-  if (!typed) return;
+  if (!typed && !(st.lines && st.lines.length)) return;
 
   let shown = String(termLine || '').replace(/\s+$/, '');
   if (prompt) {
@@ -874,7 +902,17 @@ function commitHistoryLine(id, st, termLine) {
   }
   shown = shown.replace(/\s+$/, '').trim();
   // 回显可能落后于按键，取更完整的那个
-  pushHistory(id, shown.length >= typed.length ? shown : typed);
+  const line = shown.length >= typed.length ? shown : typed;
+  if (!line) return;
+
+  st.lines = st.lines || [];
+  st.lines.push(line);
+  const joined = st.lines.join('\n');
+  // 还没输完：继续收集下一行（PS2 提示符会在下一行重新捕获）
+  if (endsWithContinuation(line) || hasUnclosedQuote(joined)) return;
+
+  st.lines = [];
+  pushHistory(id, joined);
 }
 
 function renderHistory() {
@@ -888,12 +926,16 @@ function renderHistory() {
     updateHistorySel();
     return;
   }
-  list.innerHTML = arr.map((cmd, i) => `
+  list.innerHTML = arr.map((cmd, i) => {
+    const oneLine = String(cmd).replace(/\s*\n\s*/g, ' ⏎ ');
+    const badge = String(cmd).includes('\n') ? '<span class="history-badge">多行</span>' : '';
+    return `
     <div class="history-row" data-i="${i}">
       <input type="checkbox" class="history-check">
-      <code class="history-cmd" title="${escapeHTML(cmd)}">${escapeHTML(cmd)}</code>
+      ${badge}<code class="history-cmd" title="${escapeHTML(cmd)}">${escapeHTML(oneLine)}</code>
       <button class="history-del" title="删除这条">✕</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   updateHistorySel();
   if (panel) panel.scrollTop = 0;
 }
@@ -1094,7 +1136,7 @@ function startSSHSession(conn, stage) {
   };
 
   // 记录用户敲下的命令（回车提交），供会话头部的「命令历史」面板使用
-  const histBuf = { cur: '', esc: false, prompt: null };
+  const histBuf = { cur: '', esc: false, prompt: null, lines: [] };
   term.onData((data) => {
     feedHistoryBuffer(conn.id, histBuf, data, term);
     if (ws.readyState === WebSocket.OPEN) ws.send(data);

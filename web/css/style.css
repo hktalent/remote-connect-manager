@@ -413,6 +413,14 @@ body {
   font-size: 12px;
 }
 .history-del:hover { color: #ff8080; }
+.history-badge {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #2a3040;
+  color: #cfe0ff;
+  font-size: 10px;
+}
 .history-empty { padding: 14px; text-align: center; color: #8b95a8; font-size: 12px; }
 .history-hint { padding: 6px 10px; font-size: 11px; color: #8b95a8; }
 
