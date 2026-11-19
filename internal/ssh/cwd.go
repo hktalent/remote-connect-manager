@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -16,6 +17,11 @@ import (
 var (
 	cwdMu   sync.RWMutex
 	cwdByID = map[string]string{}
+
+	// 从提示符里读到的目录（如 zsh 的 ┌──(root)-[/home/kali]），比解析 cd 更可靠
+	promptMu   sync.RWMutex
+	promptByID = map[string]string{}
+	promptTail = map[string][]byte{}
 
 	clientMu sync.RWMutex
 	clients  = map[string]*xssh.Client{}
@@ -72,6 +78,10 @@ func clearCwd(id string) {
 func Cwd(c *gin.Context) {
 	id := c.Param("id")
 	dir, known := GetCwd(id)
+	if pdir, ok := GetPromptCwd(id); ok && pdir != "" {
+		// 提示符里直接写着目录，最接近用户看到的 pwd，优先使用
+		dir, known = pdir, true
+	}
 	client := liveClient(id)
 	if client != nil {
 		if dir == "" {
@@ -80,6 +90,11 @@ func Cwd(c *gin.Context) {
 			}
 		}
 		// 交给远端执行 `cd <dir> && pwd -P`：拿到真实路径（解析 ~ / .. / 软链接）
+		if strings.HasPrefix(dir, "~") {
+			if home := homeDir(client); home != "" {
+				dir = path.Join(home, strings.TrimPrefix(strings.TrimPrefix(dir, "~"), "/"))
+			}
+		}
 		if dir != "" {
 			if real := resolveExisting(client, dir); real != "" && real != dir {
 				SetCwd(id, real)
@@ -88,6 +103,55 @@ func Cwd(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"cwd": dir, "known": known})
+}
+
+// ansiRe 去掉 ANSI 转义序列
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)")
+
+// promptPathRe 提示符里的目录，如 [/home/kali]、[~/work]
+var promptPathRe = regexp.MustCompile(`\[((?:/|~)[^\[\]\r\n]{0,200})\][^\r\n]{0,80}[#$%>]`)
+
+// scanPromptCwd 从一段终端输出里提取提示符中的目录
+func scanPromptCwd(id string, chunk []byte) {
+	if id == "" || len(chunk) == 0 {
+		return
+	}
+	clean := ansiRe.ReplaceAllString(string(chunk), "")
+
+	promptMu.Lock()
+	tail := append(promptTail[id], clean...)
+	if len(tail) > 2048 {
+		tail = tail[len(tail)-2048:]
+	}
+	promptTail[id] = tail
+	matches := promptPathRe.FindAllStringSubmatch(string(tail), -1)
+	var dir string
+	if len(matches) > 0 {
+		dir = matches[len(matches)-1][1] // 取最后一个提示符
+	}
+	promptMu.Unlock()
+
+	if dir == "" {
+		return
+	}
+	promptMu.Lock()
+	promptByID[id] = dir
+	promptMu.Unlock()
+}
+
+// GetPromptCwd 返回提示符里解析出的目录
+func GetPromptCwd(id string) (string, bool) {
+	promptMu.RLock()
+	dir, ok := promptByID[id]
+	promptMu.RUnlock()
+	return dir, ok
+}
+
+func clearPromptCwd(id string) {
+	promptMu.Lock()
+	delete(promptByID, id)
+	delete(promptTail, id)
+	promptMu.Unlock()
 }
 
 // resolveExisting 逐级向上找一个真实存在的目录，全都不存在返回空串

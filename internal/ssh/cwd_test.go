@@ -166,3 +166,51 @@ func callCwd(t *testing.T, r *gin.Engine, id string) string {
 	}
 	return resp.Cwd
 }
+
+// 提示符里带目录（zsh 的 ┌──(root)-[/home/kali] 样式）时应能识别，并优先于 cd 解析
+func TestCwdFromPrompt(t *testing.T) {
+	clearPromptCwd("conn-p")
+	// 带 ANSI 颜色的提示符
+	scanPromptCwd("conn-p", []byte("\x1b[32m┌──(root㉿host)-[\x1b[34m/home/kali\x1b[0m\x1b[32m]└─# \x1b[0m"))
+	if dir, ok := GetPromptCwd("conn-p"); !ok || dir != "/home/kali" {
+		t.Fatalf("GetPromptCwd = %q, %v", dir, ok)
+	}
+	// 后续命令输出不应清掉它
+	scanPromptCwd("conn-p", []byte("ok\r\n"))
+	if dir, _ := GetPromptCwd("conn-p"); dir != "/home/kali" {
+		t.Fatalf("普通输出后应保留: %q", dir)
+	}
+	if dir, ok := GetPromptCwd("conn-p"); !ok || dir != "/home/kali" {
+		t.Fatalf("unexpected %q", dir)
+	}
+}
+
+func TestCwdPrefersPromptOverTracker(t *testing.T) {
+	srv := testutil.StartSSH(t, nil)
+	connID := testutil.RegisterConnection(t, srv)
+	conn, err := config.GetConnectionByID(connID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := Dial(conn)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	registerClient(connID, client)
+	defer unregisterClient(connID)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/ssh/:id/cwd", Cwd)
+
+	// cd 解析得到的目录不存在（如 Tab 补全路径只记录了一半）
+	SetCwd(connID, "/tmp/rcm-typo-dir")
+	// 提示符里是真实目录
+	clearPromptCwd(connID)
+	scanPromptCwd(connID, []byte("[\x1b[34m/tmp\x1b[0m] # "))
+
+	if got := callCwd(t, r, connID); got != "/tmp" {
+		t.Fatalf("cwd 应优先用提示符里的 /tmp, got %q", got)
+	}
+}

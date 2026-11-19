@@ -1711,7 +1711,7 @@ async function openSftpModal(conn) {
   try {
     // 优先打开该 SSH 会话当前的目录，接口异常 / 超时不拖住面板
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 1500);
+    const timer = setTimeout(() => ctrl.abort(), 2500);
     try {
       const res = await fetch(`/api/ssh/${conn.id}/cwd`, { signal: ctrl.signal });
       if (res.ok) {

@@ -123,6 +123,7 @@ func HandleSSH(c *gin.Context) {
 		SetCwd(id, home)
 	}
 	defer clearCwd(id)
+	defer clearPromptCwd(id)
 
 	session, err := sshClient.NewSession()
 	if err != nil {
@@ -212,6 +213,8 @@ func HandleSSH(c *gin.Context) {
 
 	go func() {
 		for chunk := range out {
+			// 顺带从终端输出里识别提示符中的目录（zsh 的 [~] 样式），供 SFTP 对齐
+			scanPromptCwd(id, chunk)
 			if err := ws.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
 				ws.Close()
 				return
