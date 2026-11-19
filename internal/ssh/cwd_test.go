@@ -243,9 +243,10 @@ func TestSafeRestoreCwd(t *testing.T) {
 // SSH 断开后仍要记住最后一次目录，重连时才能还原
 func TestCwdFallsBackToLastWhenDisconnected(t *testing.T) {
 	connID := "conn-last-cwd"
-	SetCwd(connID, "/home/kali") // 断开前记录
-	clearCwd(connID)             // 模拟会话结束（live client 注销）
-	clearPromptCwd(connID)       // 提示符缓存也被清掉
+	rememberLast(connID, "/home/kali") // 断开前已确认过的目录
+	SetCwd(connID, "/home/kali")       // 断开前的实时目录
+	clearCwd(connID)                   // 模拟会话结束（live client 注销）
+	clearPromptCwd(connID)             // 提示符缓存也被清掉
 	unregisterClient(connID)
 
 	if _, ok := GetCwd(connID); ok {
@@ -261,5 +262,39 @@ func TestCwdFallsBackToLastWhenDisconnected(t *testing.T) {
 	r.GET("/api/ssh/:id/cwd", Cwd)
 	if got := callCwd(t, r, connID); got != "/home/kali" {
 		t.Fatalf("断开后 cwd 应回退到最后目录, got %q", got)
+	}
+}
+
+// bash 风格提示符 user@host:/path$
+func TestCwdFromBashPrompt(t *testing.T) {
+	clearPromptCwd("conn-b")
+	scanPromptCwd("conn-b", []byte("root@kali:/home/kali# "))
+	if dir, ok := GetPromptCwd("conn-b"); !ok || dir != "/home/kali" {
+		t.Fatalf("bash 提示符解析失败: %q %v", dir, ok)
+	}
+	clearPromptCwd("conn-b")
+	scanPromptCwd("conn-b", []byte("\x1b[1;32muser@box:~/work$\x1b[0m "))
+	if dir, _ := GetPromptCwd("conn-b"); dir != "~/work" {
+		t.Fatalf("~ 提示符解析失败: %q", dir)
+	}
+}
+
+// 用户敲 pwd 后，用它的输出校准当前目录（Tab 补全/别名导致 cd 解析不准时靠这个）
+func TestCwdFromPwdOutput(t *testing.T) {
+	connID := "conn-pwd"
+	clearCwd(connID)
+	clearPromptCwd(connID)
+	clearPendingPwd(connID)
+
+	notePwdInput(connID, []byte("cd /home\r"))
+	notePwdInput(connID, []byte("pwd\r"))
+	// shell 回显 pwd 结果
+	scanPromptCwd(connID, []byte("/home/kali\r\n\x1b[1;32m└─# \x1b[0m"))
+
+	if dir, ok := GetCwd(connID); !ok || dir != "/home/kali" {
+		t.Fatalf("pwd 输出未校准目录: %q %v", dir, ok)
+	}
+	if last, _ := GetLastCwd(connID); last != "/home/kali" {
+		t.Fatalf("最后目录未记住: %q", last)
 	}
 }

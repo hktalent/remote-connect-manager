@@ -145,6 +145,7 @@ func HandleSSH(c *gin.Context) {
 	}
 	defer clearCwd(id)
 	defer clearPromptCwd(id)
+	defer clearPendingPwd(id)
 
 	session, err := sshClient.NewSession()
 	if err != nil {
@@ -275,6 +276,8 @@ func HandleSSH(c *gin.Context) {
 				session.WindowChange(msg.Rows, msg.Cols)
 				continue
 			}
+			// 用户敲了 pwd：标记一下，用它的输出精确校准当前目录
+			notePwdInput(id, data)
 			// 从输入里解析 cd，同步给 SFTP 面板
 			if dir, changed := tr.feed(data); changed {
 				SetCwd(id, dir)

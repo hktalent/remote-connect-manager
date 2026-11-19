@@ -3,10 +3,14 @@
 package ssh
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
+	"remote-connect-manager/internal/config"
 	"strings"
 	"sync"
 
@@ -56,7 +60,6 @@ func liveClient(id string) *xssh.Client {
 
 // SetCwd 记录某条连接当前目录
 func SetCwd(id, dir string) {
-	rememberLast(id, dir)
 	if id == "" || dir == "" {
 		return
 	}
@@ -66,18 +69,74 @@ func SetCwd(id, dir string) {
 }
 
 // GetCwd 读取某条连接当前目录
+// cwdCachePath 最后目录的落盘位置（与连接配置同目录），重启后仍能还原
+func cwdCachePath() string {
+	p := config.DataPath()
+	if p == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p), "cwd.json")
+}
+
+var lastLoadOnce sync.Once
+
+func loadLastFromDisk() {
+	path := cwdCachePath()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var m map[string]string
+	if json.Unmarshal(data, &m) != nil {
+		return
+	}
+	lastMu.Lock()
+	for k, v := range m {
+		if v != "" {
+			lastCwdByID[k] = v
+		}
+	}
+	lastMu.Unlock()
+}
+
+func saveLastToDisk() {
+	path := cwdCachePath()
+	if path == "" {
+		return
+	}
+	lastMu.RLock()
+	data, err := json.Marshal(lastCwdByID)
+	lastMu.RUnlock()
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
 // rememberLast 记录该连接最后一次确认的目录（跨会话保留）
 func rememberLast(id, dir string) {
 	if id == "" || dir == "" {
 		return
 	}
+	lastLoadOnce.Do(loadLastFromDisk)
 	lastMu.Lock()
+	changed := lastCwdByID[id] != dir
 	lastCwdByID[id] = dir
 	lastMu.Unlock()
+	if changed {
+		saveLastToDisk()
+	}
 }
 
 // GetLastCwd 返回该连接最后确认的目录（SSH 断开后仍可用，供重连还原）
 func GetLastCwd(id string) (string, bool) {
+	lastLoadOnce.Do(loadLastFromDisk)
 	lastMu.RLock()
 	dir, ok := lastCwdByID[id]
 	lastMu.RUnlock()
@@ -129,13 +188,70 @@ func Cwd(c *gin.Context) {
 			}
 		}
 		if dir != "" {
-			if real := resolveExisting(client, dir); real != "" && real != dir {
-				SetCwd(id, real)
+			if real := resolveExisting(client, dir); real != "" {
+				if real != dir {
+					SetCwd(id, real)
+				}
 				dir = real
+				rememberLast(id, real)
+			} else if last, ok := GetLastCwd(id); ok && last != "" {
+				// 跟踪到的路径不存在（Tab 补全只记了半截）：退回最后一次确认过的目录
+				SetCwd(id, last)
+				dir = last
 			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"cwd": dir, "known": known})
+}
+
+var (
+	pendingPwdMu sync.RWMutex
+	pendingPwd   = map[string]bool{}
+	inputBufByID = map[string]string{}
+)
+
+// notePwdInput 记录按键流：回车那一刻如果整行就是 pwd，就等它的输出校准目录
+func notePwdInput(id string, data []byte) {
+	pendingPwdMu.Lock()
+	defer pendingPwdMu.Unlock()
+	buf := inputBufByID[id]
+	for _, r := range string(data) {
+		switch {
+		case r == '\r' || r == '\n':
+			if strings.TrimSpace(buf) == "pwd" {
+				pendingPwd[id] = true
+			}
+			buf = ""
+		case r == 0x7f || r == '\b':
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+			}
+		case r < 0x20:
+			// Ctrl-C/Ctrl-U 之类：丢弃当前行
+			buf = ""
+		default:
+			buf += string(r)
+		}
+	}
+	if len(buf) > 512 {
+		buf = buf[len(buf)-512:]
+	}
+	inputBufByID[id] = buf
+}
+
+func takePendingPwd(id string) bool {
+	pendingPwdMu.Lock()
+	on := pendingPwd[id]
+	delete(pendingPwd, id)
+	pendingPwdMu.Unlock()
+	return on
+}
+
+func clearPendingPwd(id string) {
+	pendingPwdMu.Lock()
+	delete(pendingPwd, id)
+	delete(inputBufByID, id)
+	pendingPwdMu.Unlock()
 }
 
 // ansiRe 去掉 ANSI 转义序列
@@ -143,6 +259,9 @@ var ansiRe = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(
 
 // promptPathRe 提示符里的目录，如 [/home/kali]、[~/work]
 var promptPathRe = regexp.MustCompile(`\[((?:/|~)[^\[\]\r\n]{0,200})\][^\r\n]{0,80}[#$%>]`)
+
+// promptPathRe2 bash 风格 user@host:/home/kali$ 、user@host:~/work#
+var promptPathRe2 = regexp.MustCompile(`@[^:\r\n]{0,60}:((?:/|~)[^\r\n#$%\s]{0,200})[#$%]`)
 
 // scanPromptCwd 从一段终端输出里提取提示符中的目录
 func scanPromptCwd(id string, chunk []byte) {
@@ -161,8 +280,22 @@ func scanPromptCwd(id string, chunk []byte) {
 	var dir string
 	if len(matches) > 0 {
 		dir = matches[len(matches)-1][1] // 取最后一个提示符
+	} else if m2 := promptPathRe2.FindAllStringSubmatch(string(tail), -1); len(m2) > 0 {
+		dir = m2[len(m2)-1][1]
 	}
 	promptMu.Unlock()
+
+	// pwd 的输出就是绝对路径，直接采信（比解析 cd 更准）
+	if takePendingPwd(id) {
+		for _, ln := range strings.Split(clean, "\n") {
+			ln = strings.TrimRight(ln, "\r ")
+			if strings.HasPrefix(ln, "/") && !strings.ContainsAny(ln, " \t") && ln != "/" {
+				SetCwd(id, ln)
+				rememberLast(id, ln)
+				break
+			}
+		}
+	}
 
 	if dir == "" {
 		return
@@ -170,7 +303,9 @@ func scanPromptCwd(id string, chunk []byte) {
 	promptMu.Lock()
 	promptByID[id] = dir
 	promptMu.Unlock()
-	rememberLast(id, dir)
+	if !strings.HasPrefix(dir, "~") {
+		rememberLast(id, dir)
+	}
 }
 
 // GetPromptCwd 返回提示符里解析出的目录

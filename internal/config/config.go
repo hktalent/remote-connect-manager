@@ -41,6 +41,11 @@ var (
 	mu       sync.RWMutex
 )
 
+// DataPath 返回当前配置文件路径（同目录下放其他缓存，如 cwd.json）
+func DataPath() string {
+	return dataFile
+}
+
 func InitDB(path string) error {
 	dataFile = path
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -228,7 +233,8 @@ func RenameKeyReference(oldName, newName string) {
 	}
 }
 
-func UpdateScreenshot(id, path string) error {	conns, err := loadAll()
+func UpdateScreenshot(id, path string) error {
+	conns, err := loadAll()
 	if err != nil {
 		return err
 	}
