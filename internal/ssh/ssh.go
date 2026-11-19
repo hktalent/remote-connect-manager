@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,11 @@ type wsClientMsg struct {
 
 func HandleSSH(c *gin.Context) {
 	id := c.Param("id")
+	startedAt := time.Now()
+	closeReason := "会话结束"
+	defer func() {
+		log.Printf("[ssh %s] 会话结束 用时=%s 原因=%s", id, time.Since(startedAt).Round(time.Second), closeReason)
+	}()
 	conn, err := config.GetConnectionByID(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "connection not found"})
@@ -121,8 +127,9 @@ func HandleSSH(c *gin.Context) {
 	// 表现为「连着好好的，过一会自己断开」。每 30s 发一次 keepalive 请求，
 	// 失败就主动关掉 WebSocket，让前端立刻显示离线并可一键重连。
 	keepStop := make(chan struct{})
+	keepFails := 0
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -130,9 +137,18 @@ func HandleSSH(c *gin.Context) {
 				return
 			case <-ticker.C:
 				if _, _, err := sshClient.SendRequest("keepalive@openssh.com", true, nil); err != nil {
-					ws.Close()
-					return
+					// 单次失败不立刻断开：偶发丢包/服务端瞬时拒绝都会恢复，
+					// 连续 3 次（约 45s）都失败才认为链路已死
+					keepFails++
+					log.Printf("[ssh %s] keepalive 失败 %d/3: %v", id, keepFails, err)
+					if keepFails >= 3 {
+						closeReason = "keepalive 连续失败"
+						ws.Close()
+						return
+					}
+					continue
 				}
+				keepFails = 0
 			}
 		}
 	}()
@@ -294,14 +310,17 @@ func HandleSSH(c *gin.Context) {
 
 	// WebSocket 层心跳：代理/反代对空闲连接也有超时，定期 Ping 保活
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-keepStop:
 				return
 			case <-ticker.C:
+				// 控制帧 Ping 保活浏览器↔服务端；再补一个空数据帧，
+				// 免得反向代理按"无数据帧"判定空闲直接掐断（nginx 默认 60s 就会）
 				_ = ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+				_ = ws.WriteMessage(websocket.BinaryMessage, []byte{})
 			}
 		}
 	}()
@@ -325,6 +344,7 @@ func HandleSSH(c *gin.Context) {
 				return
 			}
 		}
+		closeReason = "远端输出结束（shell 退出或链路断开）"
 		ws.Close()
 	}()
 
@@ -332,6 +352,7 @@ func HandleSSH(c *gin.Context) {
 		for {
 			_, data, err := ws.ReadMessage()
 			if err != nil {
+				closeReason = "websocket 读失败: " + err.Error()
 				break
 			}
 			var msg wsClientMsg

@@ -60,7 +60,8 @@ docker run -d --name remote-connect-manager \
   权威来源会把目录写进「最后已知目录」并落盘 `data/cwd.json`（断开、容器重启都还在），另存一份供 SFTP 面板定位用。
 - **下次登录 / ↻ 重连自动回到上次目录**：shell 一吐出提示符（或输出静默 120ms、最迟 1.5s）后端就以**普通输入**的方式执行一条 `cd '<目录>'`（实测从 WebSocket 建立到命令发出约 70ms），只发这一条、只发一次，不做存在性探测、不清屏、不拼接其它命令。因此终端里只会看到这一条 `cd`（这是你要求的"推送执行"）；目录不存在时 shell 自己报错并停在 `$HOME`。
 - 登录过程**不执行任何远端探测命令**：家目录起点按用户名本地推断（`root` → `/root`，其它 → `/home/<user>`），不再 `printf "$HOME"`、也不再 `cd && pwd` 校验。
-- 后端每 30s 发一次 SSH `keepalive@openssh.com`，并对 WebSocket 每 30s Ping 一次，避免空闲被 NAT / 防火墙 / `sshd` 的 `ClientAlive*` 判定超时；保活失败会立刻关掉连接，让前端马上变红而不是"假连接"。
+- **空闲不断线**：后端每 15s 发一次 SSH `keepalive@openssh.com`（单次失败只记日志、**连续 3 次**（约 45s）才判定链路死亡），WebSocket 每 15s 同时发 Ping 控制帧和**空数据帧**（空帧是为了让 nginx 之类反向代理的 idle timeout 不会按"无数据"掐断，默认 60s 就会掐）。实测空闲 **7 分钟**连接不掉。
+- 断开原因会写进服务端日志，便于定位：`docker logs remote-connect-manager | grep "[ssh"` 可看到 `会话结束 用时=… 原因=keepalive 连续失败 / 远端输出结束 / websocket 读失败 …`。
 
 ### SFTP 文件管理与端口转发
 
