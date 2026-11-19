@@ -205,6 +205,10 @@ func HandleSSH(c *gin.Context) {
 			ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
 			return
 		}
+		// 远端不允许 exec 时退化为：先 cd 再 clear，保证目录仍被还原
+		if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
+			_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s && clear\r", shellQuote(dir))))
+		}
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取

@@ -18,6 +18,10 @@ var (
 	cwdMu   sync.RWMutex
 	cwdByID = map[string]string{}
 
+	// 最后一次确认过的目录（断开后仍保留，重连时用它还原）
+	lastMu      sync.RWMutex
+	lastCwdByID = map[string]string{}
+
 	// 从提示符里读到的目录（如 zsh 的 ┌──(root)-[/home/kali]），比解析 cd 更可靠
 	promptMu   sync.RWMutex
 	promptByID = map[string]string{}
@@ -52,6 +56,7 @@ func liveClient(id string) *xssh.Client {
 
 // SetCwd 记录某条连接当前目录
 func SetCwd(id, dir string) {
+	rememberLast(id, dir)
 	if id == "" || dir == "" {
 		return
 	}
@@ -61,6 +66,24 @@ func SetCwd(id, dir string) {
 }
 
 // GetCwd 读取某条连接当前目录
+// rememberLast 记录该连接最后一次确认的目录（跨会话保留）
+func rememberLast(id, dir string) {
+	if id == "" || dir == "" {
+		return
+	}
+	lastMu.Lock()
+	lastCwdByID[id] = dir
+	lastMu.Unlock()
+}
+
+// GetLastCwd 返回该连接最后确认的目录（SSH 断开后仍可用，供重连还原）
+func GetLastCwd(id string) (string, bool) {
+	lastMu.RLock()
+	dir, ok := lastCwdByID[id]
+	lastMu.RUnlock()
+	return dir, ok
+}
+
 func GetCwd(id string) (string, bool) {
 	cwdMu.RLock()
 	dir, ok := cwdByID[id]
@@ -83,6 +106,16 @@ func Cwd(c *gin.Context) {
 		dir, known = pdir, true
 	}
 	client := liveClient(id)
+	if client == nil {
+		// 会话已断开：用断开前记住的目录，保证重连能回到原处
+		if dir == "" {
+			if last, ok := GetLastCwd(id); ok {
+				dir, known = last, true
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"cwd": dir, "known": known})
+		return
+	}
 	if client != nil {
 		if dir == "" {
 			if home := homeDir(client); home != "" {
@@ -137,6 +170,7 @@ func scanPromptCwd(id string, chunk []byte) {
 	promptMu.Lock()
 	promptByID[id] = dir
 	promptMu.Unlock()
+	rememberLast(id, dir)
 }
 
 // GetPromptCwd 返回提示符里解析出的目录

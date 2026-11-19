@@ -259,3 +259,20 @@ function zshTerm(initialLines) {
   assert(l13.length === 1, '多行只一条');
   assert(l13[0] === 'echo "o\\\nk"', '剥掉 dquote> 且保留换行: ' + JSON.stringify(l13[0]));
 })();
+
+// 14) Ctrl+R 反查历史后回车：要记录被检索出来的那条命令，而不是检索词
+(async () => {
+  const term = zshTerm(['└─# ']);
+  const st14 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  // 用户按 Ctrl+R（\x12 被忽略），再敲检索词
+  ctx.feedHistoryBuffer('c14', st14, '\x12', term);
+  term.setLine("(reverse-i-search)`air': ");
+  ctx.feedHistoryBuffer('c14', st14, 'air', term);
+  // shell 反查出整条命令，光标行变成 `air': ps -ef|grep "aireplay-ng"`
+  term.setLine("(reverse-i-search)`air': ps -ef|grep \"aireplay-ng\"" + ' '.repeat(6));
+  ctx.feedHistoryBuffer('c14', st14, '\r', term);
+
+  const l14 = ctx.loadHistory('c14');
+  assert(l14.length === 1, '反查执行后记录一条: ' + JSON.stringify(l14));
+  assert(l14[0] === 'ps -ef|grep "aireplay-ng"', '记录完整命令: ' + JSON.stringify(l14[0]));
+})();

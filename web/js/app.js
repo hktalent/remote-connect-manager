@@ -952,10 +952,22 @@ function commitHistoryLine(id, st, termLine) {
   st.cur = '';
   st.prompt = null;
   st.startY = null;
-  if (!typed && !(st.lines && st.lines.length)) return;
+
+  // Ctrl+R / Ctrl+S 历史检索：检索时输入的不是真正要执行的命令，
+  // 光标那行形如 (reverse-i-search)`air': ps -ef|grep "aireplay-ng"
+  const isSearch = /i-search/.test(prompt);
+  if (!typed && !(st.lines && st.lines.length) && !isSearch) return;
 
   let shown = String(termLine || '').replace(/\s+$/, '');
   let stripped = false;
+  if (isSearch) {
+    // 取最后一个 "': " 之后的内容，就是被检索出来、即将执行的命令
+    const at = shown.lastIndexOf("': ");
+    if (at >= 0) {
+      shown = shown.slice(at + 3);
+      stripped = true;
+    }
+  }
   if (prompt) {
     if (shown.startsWith(prompt)) {
       shown = shown.slice(prompt.length);
