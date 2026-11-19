@@ -193,16 +193,22 @@ func HandleSSH(c *gin.Context) {
 		return
 	}
 
-	// 一律走标准 shell 请求（不 exec 自定义命令：部分 sshd 只允许 shell/受限 shell，
-	// exec 会被拒或直接退出，表现为「状态显示已连接但终端一片空白」）
-	if err := session.Shell(); err != nil {
-		ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
-		return
-	}
-	// 还原目录：shell 起来后发一条 cd，再用 ANSI 清屏把这条回显擦掉
-	// （不用外部 clear：精简系统可能没有，且 TERM 未设置时会报错）
+	// 还原目录：用 exec 直接在目标目录里拉起交互式 shell。
+	// 关键：绝不往 stdin 里敲 cd——那会在终端留下 "cd -- '/xxx' ..." 回显，
+	// 用户会看到莫名其妙被自动执行的命令。
+	// cd 用 ';' 而不是 '&&'：目录不存在也要把 shell 起起来（落在家目录）。
+	shellStarted := false
 	if dir := safeRestoreCwd(c.Query("cwd")); dir != "" {
-		_, _ = stdin.Write([]byte(fmt.Sprintf("cd -- %s 2>/dev/null; printf '\\033[H\\033[2J\\033[3J'\r", shellQuote(dir))))
+		cmd := fmt.Sprintf(`cd -- %s 2>/dev/null; s=${SHELL:-/bin/sh}; [ -x "$s" ] || s=/bin/sh; exec "$s" -i`, shellQuote(dir))
+		if err := session.Start(cmd); err == nil {
+			shellStarted = true
+		}
+	}
+	if !shellStarted {
+		if err := session.Shell(); err != nil {
+			ws.WriteJSON(gin.H{"type": "error", "data": err.Error()})
+			return
+		}
 	}
 
 	// PTY 输出必须用二进制帧：文本帧要求整帧是合法 UTF-8，而 4KB 的读取
