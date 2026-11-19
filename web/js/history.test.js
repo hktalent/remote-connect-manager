@@ -137,3 +137,44 @@ function typeLine(term, id, st, shown, padding) {
   ctx.feedHistoryBuffer('c5', st5, '\x03', term);
   assert(ctx.loadHistory('c5').length === 0, 'Ctrl-C 放弃未完成命令');
 })();
+
+// 8) zsh 多行提示符 + 上一行命令输出：不能把提示符/输出写进历史
+function zshTerm(initialLines) {
+  const state = { lines: initialLines.slice() };
+  const active = {
+    baseY: 0,
+    get cursorY() { return state.lines.length - 1; },
+    get cursorX() { return state.lines[state.lines.length - 1].length; },
+    getLine(y) {
+      const text = state.lines[y];
+      if (text === undefined) return null;
+      return {
+        translateToString(trimRight, startCol, endCol) {
+          let out = text.slice(startCol || 0, endCol === undefined ? text.length : endCol);
+          return trimRight ? out.replace(/\s+$/, '') : out;
+        },
+      };
+    },
+  };
+  return {
+    buffer: { active },
+    setLine(text) { state.lines[state.lines.length - 1] = text; },
+    pushLine(text) { state.lines.push(text); },
+  };
+}
+
+(async () => {
+  const term = zshTerm([
+    'ok',
+    '┌──(root㉿lkhjkjjjjjjjkh)-[/home/kali]',
+    '└─# ',
+  ]);
+  const st8 = { cur: '', esc: false, prompt: null, lines: [], startY: null };
+  ctx.feedHistoryBuffer('c8', st8, 'echo "ok"', term);
+  term.setLine('└─# echo "ok"' + ' '.repeat(30));
+  ctx.feedHistoryBuffer('c8', st8, '\r', term);
+  const l8 = ctx.loadHistory('c8');
+  assert(l8.length === 1, 'zsh 场景只记一条, 实际 ' + l8.length);
+  assert(l8[0] === 'echo "ok"', '不含提示符/补白: ' + JSON.stringify(l8[0]));
+  assert(!/┌──|└─/.test(l8[0]), '记录里没有提示符字符');
+})();

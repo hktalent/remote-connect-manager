@@ -832,6 +832,27 @@ function readLineText(term, maxLines = 8) {
   }
 }
 
+// 读取从 promptStartY（绝对行号）到光标所在行的文本，命令从提示符那一行开始
+function readCommandText(term, promptStartY) {
+  if (!term || !term.buffer) return '';
+  try {
+    const buf = term.buffer.active;
+    const endY = buf.baseY + buf.cursorY;
+    if (typeof promptStartY !== 'number' || promptStartY > endY) return readLineText(term);
+    let text = '';
+    for (let y = promptStartY; y <= endY; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      text += y === endY
+        ? line.translateToString(true, 0, buf.cursorX)
+        : line.translateToString(true);
+    }
+    return text;
+  } catch (e) {
+    return '';
+  }
+}
+
 // 从终端输入里取出「已提交的命令行」，忽略方向键等 ESC 序列。
 // 客户端只看得到按键：Tab 补全、方向键回放都由远端 shell 完成，
 // 因此回车后以终端里实际显示的那一行（提示符之后）为准，按键缓冲只作兜底。
@@ -846,7 +867,7 @@ function feedHistoryBuffer(id, st, data, term) {
     if (ch === '\x1b') { st.esc = true; continue; }
     if (ch === '\r' || ch === '\n') {
       // 回车这一刻光标还在命令行末尾，立刻读，避免读到下一行的新提示符
-      commitHistoryLine(id, st, term ? readLineText(term) : '');
+      commitHistoryLine(id, st, term ? readCommandText(term, st.startY) : '');
       continue;
     }
     if (ch === '\x7f' || ch === '\b') { st.cur = st.cur.slice(0, -1); continue; }
@@ -854,11 +875,16 @@ function feedHistoryBuffer(id, st, data, term) {
       // Ctrl-C / Ctrl-U：放弃当前未完成的（多行）命令
       st.cur = '';
       st.prompt = null;
+      st.startY = null;
       st.lines = [];
       continue;
     }
     if (ch < ' ') continue;
-    if (!st.prompt && term) st.prompt = readLineText(term); // 敲第一个字符前的提示符
+    if (!st.prompt && term) {
+      // 只取光标所在那一段（zsh 多行提示符的末行），并记住命令起始的绝对行号
+      st.prompt = readLineText(term, 1);
+      try { st.startY = term.buffer.active.baseY + term.buffer.active.cursorY; } catch (e) { st.startY = null; }
+    }
     st.cur += ch;
   }
 }
@@ -892,17 +918,24 @@ function commitHistoryLine(id, st, termLine) {
   const prompt = st.prompt || '';
   st.cur = '';
   st.prompt = null;
+  st.startY = null;
   if (!typed && !(st.lines && st.lines.length)) return;
 
   let shown = String(termLine || '').replace(/\s+$/, '');
+  let stripped = false;
   if (prompt) {
-    // 取最后一次出现的提示符，兼容命令换行、滚动后前面残留输出
-    const idx = shown.lastIndexOf(prompt);
-    if (idx >= 0) shown = shown.slice(idx + prompt.length);
+    if (shown.startsWith(prompt)) {
+      shown = shown.slice(prompt.length);
+      stripped = true;
+    } else {
+      // 提示符可能被重绘/换行打断，退回到最后一次出现的提示符
+      const idx = shown.lastIndexOf(prompt);
+      if (idx >= 0) { shown = shown.slice(idx + prompt.length); stripped = true; }
+    }
   }
   shown = shown.replace(/\s+$/, '').trim();
-  // 回显可能落后于按键，取更完整的那个
-  const line = shown.length >= typed.length ? shown : typed;
+  // 没剥掉提示符就别用终端文本（会把 ┌──(root…)# 写进历史），退回按键缓冲
+  const line = (stripped && shown.length >= typed.length) ? shown : typed;
   if (!line) return;
 
   st.lines = st.lines || [];
@@ -1136,7 +1169,7 @@ function startSSHSession(conn, stage) {
   };
 
   // 记录用户敲下的命令（回车提交），供会话头部的「命令历史」面板使用
-  const histBuf = { cur: '', esc: false, prompt: null, lines: [] };
+  const histBuf = { cur: '', esc: false, prompt: null, lines: [], startY: null };
   term.onData((data) => {
     feedHistoryBuffer(conn.id, histBuf, data, term);
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
