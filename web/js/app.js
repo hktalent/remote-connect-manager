@@ -1320,6 +1320,8 @@ function startSSHSession(conn, stage, restoreCwd) {
         firstData = true;
         sess.online = true;
         syncConnStatus();
+        // 登录成功后把焦点切到终端光标处，用户不用先点一下才能打字
+        focusTerm();
       }
       if (typeof ev.data === 'string') {
         term.write(ev.data);
@@ -1373,6 +1375,11 @@ function startSSHSession(conn, stage, restoreCwd) {
 
   window.addEventListener('resize', onResize);
   fit();
+  // 打开会话即聚焦终端（光标就在提示符位置），连接成功后 onmessage 里会再补一次
+  // 用函数声明（提升到本作用域顶部），onmessage 里可以安全引用
+  function focusTerm() { try { term.focus(); } catch (e) {} }
+  focusTerm();
+  setTimeout(focusTerm, 60);
   connect(restoreCwd || '');
   return sess;
 }
